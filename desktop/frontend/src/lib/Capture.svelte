@@ -90,7 +90,7 @@
 </script>
 
 <div class="card stack">
-  <h2>Capture a meeting</h2>
+  <h2 class="display">Capture a meeting</h2>
   <p class="muted">
     Import an audio file or record live, then Vetromar ingests the information.
   </p>

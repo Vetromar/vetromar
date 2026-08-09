@@ -85,7 +85,7 @@
 </script>
 
 <div class="card stack login-card">
-  <h2>Sign in to your workspace</h2>
+  <h2 class="display">Sign in to your workspace</h2>
   <p class="muted">
     Vetromar syncs your team's knowledge across everyone's devices through a
     workspace server your team runs. Sign in with your account, or the invite
@@ -186,6 +186,6 @@
     font-size: 0.85em;
   }
   .server-url {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
 </style>

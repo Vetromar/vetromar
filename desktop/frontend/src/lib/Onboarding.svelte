@@ -96,7 +96,7 @@
 <div class="backdrop">
   <div class="tour-card stack" role="dialog" aria-label="Welcome tour">
     <div class="row spread">
-      <h2>{card.title}</h2>
+      <h2 class="display">{card.title}</h2>
       <span class="muted step-count">{step + 1}/{cards.length}</span>
     </div>
     {#if card.mcp && !mcpPrompt}
@@ -150,9 +150,7 @@
   .tour-card {
     width: min(440px, 90vw);
     background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
+    border: 2px solid var(--border);
     padding: 24px;
   }
   .step-count {
@@ -176,12 +174,11 @@
     margin-top: 4px;
   }
   .prompt-box {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 0.8em;
     line-height: 1.5;
     background: color-mix(in srgb, var(--accent) 8%, transparent);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 2px solid var(--border);
     padding: 10px 12px;
     user-select: text;
     max-height: 140px;

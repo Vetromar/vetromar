@@ -166,7 +166,7 @@
 
 <div class="card stack">
   <div class="row spread">
-    <h2>{firstRun ? "Set up extraction" : "Settings"}</h2>
+    <h2 class="display">{firstRun ? "Set up extraction" : "Settings"}</h2>
     {#if onBack}<button onclick={onBack}>Back</button>{/if}
   </div>
   <p class="muted">
@@ -380,15 +380,15 @@
     gap: 6px;
   }
   .choice.active {
-    border-color: var(--accent, #7c5cff);
+    border-color: var(--accent);
   }
   .pill.active-pill {
-    border-color: var(--accent, #7c5cff);
-    color: var(--accent, #7c5cff);
+    border-color: var(--accent);
+    color: var(--text);
   }
   .current {
     font-size: 0.8em;
-    color: var(--accent, #7c5cff);
+    color: var(--accent-strong);
     font-weight: normal;
   }
 </style>

@@ -129,7 +129,7 @@
 </script>
 
 <header class="app-header">
-  <div class="brand"><Logo /> Vetromar</div>
+  <div class="brand"><Logo size={22} /> vetromar</div>
   {#if inApp}
     <nav class="tabs">
       <button class:active={view === "capture"} onclick={() => (view = "capture")}>Capture</button>
@@ -169,7 +169,10 @@
       <button class="activity-badge" onclick={() => updater.reopen()}>update ready</button>
     {/if}
     {#if health && inApp}
-      <span class="badge" style:color={health.ready ? "var(--good)" : "var(--warn)"}>
+      <span
+        class="badge"
+        style:background="color-mix(in srgb, {health.ready ? 'var(--good)' : 'var(--warn)'} 18%, transparent)"
+      >
         {health.ready ? "ready" : "setup needed"}
       </span>
       <button onclick={() => refresh({ gotoSetup: true })}>Settings</button>

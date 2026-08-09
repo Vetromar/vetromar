@@ -52,13 +52,33 @@
   let prevPositions = {};
   let userMoved = false;
 
-  const UNIT_COLORS = {
-    decision: "#4ade80",
-    claim: "#6ea8fe",
-    commitment: "#fbbf24",
-    question: "#f472b6",
-    metric: "#2dd4bf",
-  };
+  // Node palette lives in app.css (--g-*) so light/dark stay in one place.
+  function readPalette() {
+    const s = getComputedStyle(document.documentElement);
+    const v = (name) => s.getPropertyValue(name).trim();
+    return {
+      entity: v("--g-entity"),
+      episode: v("--g-episode"),
+      evidence: v("--g-evidence"),
+      superseded: v("--bad"),
+      axes: { x: v("--g-axis-x"), y: v("--g-axis-y"), z: v("--g-axis-z") },
+      unit: {
+        decision: v("--g-decision"),
+        claim: v("--g-claim"),
+        commitment: v("--g-commitment"),
+        question: v("--g-question"),
+        metric: v("--g-metric"),
+      },
+    };
+  }
+  let palette = $state(readPalette());
+
+  $effect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const refresh = () => (palette = readPalette());
+    mq.addEventListener("change", refresh);
+    return () => mq.removeEventListener("change", refresh);
+  });
 
   const LAYERS = [
     { n: 1, label: "Entities" },
@@ -67,10 +87,10 @@
   ];
 
   function color(node) {
-    if (node.kind === "entity") return "#c084fc";
-    if (node.kind === "unit") return UNIT_COLORS[node.type] ?? "#9aa3b2";
-    if (node.kind === "episode") return "#94a3b8";
-    return "#64748b";
+    if (node.kind === "entity") return palette.entity;
+    if (node.kind === "unit") return palette.unit[node.type] ?? palette.episode;
+    if (node.kind === "episode") return palette.episode;
+    return palette.evidence;
   }
 
   function radius(node) {
@@ -396,18 +416,19 @@
   // -- axis gizmo -------------------------------------------------------------
 
   const GIZMO_AXES = [
-    { id: "+x", v: { x: 1, y: 0, z: 0 }, color: "#f87171", label: "X" },
-    { id: "+y", v: { x: 0, y: 1, z: 0 }, color: "#4ade80", label: "Y" },
-    { id: "+z", v: { x: 0, y: 0, z: 1 }, color: "#6ea8fe", label: "Z" },
-    { id: "-x", v: { x: -1, y: 0, z: 0 }, color: "#f87171" },
-    { id: "-y", v: { x: 0, y: -1, z: 0 }, color: "#4ade80" },
-    { id: "-z", v: { x: 0, y: 0, z: -1 }, color: "#6ea8fe" },
+    { id: "+x", v: { x: 1, y: 0, z: 0 }, axis: "x", label: "X" },
+    { id: "+y", v: { x: 0, y: 1, z: 0 }, axis: "y", label: "Y" },
+    { id: "+z", v: { x: 0, y: 0, z: 1 }, axis: "z", label: "Z" },
+    { id: "-x", v: { x: -1, y: 0, z: 0 }, axis: "x" },
+    { id: "-y", v: { x: 0, y: -1, z: 0 }, axis: "y" },
+    { id: "-z", v: { x: 0, y: 0, z: -1 }, axis: "z" },
   ];
 
   const gizmo = $derived.by(() => {
     const b = basis(cam);
     return GIZMO_AXES.map((a) => ({
       ...a,
+      color: palette.axes[a.axis],
       x: 46 + 32 * dot(a.v, b.r),
       y: 46 - 32 * dot(a.v, b.u),
       depth: dot(a.v, b.f),
@@ -556,7 +577,7 @@
                 r={it.r}
                 fill={color(it.n)}
                 fill-opacity={(it.n.superseded ? 0.3 : it.n.kind === "episode" ? 0.25 : 0.92) * it.fade}
-                stroke={it.n.superseded ? "#f87171" : it.n.kind === "episode" ? color(it.n) : "none"}
+                stroke={it.n.superseded ? palette.superseded : it.n.kind === "episode" ? color(it.n) : "none"}
                 stroke-width={it.n.superseded || it.n.kind === "episode" ? 1.6 : 0}
               />
               {#if it.n.kind !== "evidence" || hovered === it.n.id}
@@ -617,17 +638,15 @@
     </div>
 
     <div class="row legend" style="flex-wrap:wrap">
-      <span><i style="background:#c084fc"></i> entity</span>
-      <span><i style="background:#4ade80"></i> decision</span>
-      <span><i style="background:#6ea8fe"></i> claim</span>
-      <span><i style="background:#fbbf24"></i> commitment</span>
-      <span><i style="background:#f472b6"></i> question</span>
-      <span><i style="background:#2dd4bf"></i> metric</span>
+      <span><i style="background:{palette.entity}"></i> entity</span>
+      {#each Object.entries(palette.unit) as [type, c] (type)}
+        <span><i style="background:{c}"></i> {type}</span>
+      {/each}
       {#if layer >= 3}
         <span><i class="ring"></i> episode</span>
-        <span><i style="background:#64748b; width:6px; height:6px"></i> evidence</span>
+        <span><i style="background:{palette.evidence}; width:6px; height:6px"></i> evidence</span>
       {/if}
-      <span><i style="background:transparent; border:1.5px solid #f87171"></i> superseded</span>
+      <span><i style="background:transparent; border:1.5px solid {palette.superseded}"></i> superseded</span>
     </div>
   {/if}
 </div>

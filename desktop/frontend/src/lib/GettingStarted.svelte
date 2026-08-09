@@ -91,7 +91,6 @@
     display: flex;
     gap: 8px;
     align-items: baseline;
-    border-radius: 6px;
   }
   .item:hover {
     background: color-mix(in srgb, var(--accent) 12%, transparent);

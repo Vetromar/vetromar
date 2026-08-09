@@ -173,7 +173,7 @@
 </script>
 
 <div class="card stack">
-  <h2>Sources</h2>
+  <h2 class="display">Sources</h2>
   <p class="muted">
     Connect Vetromar to your stack — one browser consent click per source, no
     tokens or config files. Sync pulls what's new into the knowledge store.
@@ -319,7 +319,7 @@
     <div class="catalog-grid">
       {#each shownCatalog as entry (entry.name)}
         <div class="catalog-card" class:expanded={credFor === entry.name}>
-          <div class="row spread">
+          <div class="row spread" style="flex-wrap:wrap; row-gap:4px">
             <div class="row" style="gap:8px">
               <h3>{entry.name}</h3>
               <span class="badge">{entry.source_kind}</span>
@@ -449,9 +449,8 @@
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel-2);
+    border: 2px solid var(--border);
+    background: var(--panel);
     padding: 14px 18px;
   }
   .source-row + .source-row {
@@ -494,9 +493,8 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel-2);
+    border: 2px solid var(--border);
+    background: var(--panel);
     padding: 16px 18px;
     min-height: 118px;
   }
@@ -523,9 +521,8 @@
     font-weight: 600;
   }
   .sync-report {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel-2);
+    border: 2px solid var(--border);
+    background: var(--panel);
     padding: 16px 18px;
   }
   .sync-report h3 {

@@ -497,12 +497,11 @@
 
 <style>
   .card.dropping {
-    outline: 2px dashed var(--accent, #7c6cf0);
+    outline: 2px dashed var(--accent);
     outline-offset: -6px;
   }
   .dropzone {
-    border: 1px dashed var(--accent, #7c6cf0);
-    border-radius: 8px;
+    border: 2px dotted var(--accent);
     padding: 10px 14px;
     text-align: center;
     font-size: 13px;

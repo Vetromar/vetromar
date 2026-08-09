@@ -178,7 +178,7 @@
 
   <div class="card stack">
     <div class="row spread">
-      <h2>{status?.workspace || "Workspace"}</h2>
+      <h2 class="display">{status?.workspace || "Workspace"}</h2>
       <button onclick={signOut}>Sign out</button>
     </div>
     <p class="muted">Signed in as {status?.email} ({status?.role})</p>
@@ -316,17 +316,17 @@
     gap: 8px;
   }
   .notice-banner {
-    border-color: var(--warn, #fbbf24);
+    border-color: var(--warn);
   }
   .danger-zone {
-    border-color: color-mix(in srgb, #ef4444 45%, transparent);
+    border-color: var(--bad);
   }
   .danger-btn {
-    color: #ef4444;
-    border-color: color-mix(in srgb, #ef4444 55%, transparent);
+    color: var(--bad);
+    border-color: var(--bad);
   }
   .danger-btn.confirm {
-    background: #ef4444;
-    color: #fff;
+    background: var(--bad);
+    color: #f7f1e3;
   }
 </style>
