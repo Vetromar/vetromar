@@ -111,6 +111,7 @@ def test_download_local_models_runs_all_legs_in_order(tmp_path, monkeypatch):
 
 
 def test_download_transcription_models_skips_present_components(tmp_path, monkeypatch):
+    pytest.importorskip("faster_whisper")  # the [capture] extra — absent on CI
     warm_fake_transcription_caches()
     import faster_whisper.utils
     import huggingface_hub
@@ -130,6 +131,7 @@ def test_download_transcription_models_skips_present_components(tmp_path, monkey
 
 
 def test_download_transcription_models_fetches_missing(tmp_path, monkeypatch):
+    pytest.importorskip("faster_whisper")  # the [capture] extra — absent on CI
     calls = []
     import faster_whisper.utils
     import huggingface_hub
