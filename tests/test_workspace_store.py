@@ -408,3 +408,74 @@ def test_v3_store_migrates_additively_to_v4(tmp_path):
     entity = create_entity(migrated, "Priya")
     assert [c["row_id"] for c in migrated.pending_changes()] == [entity.id]
     migrated.close()
+
+
+# -- temporal edges + entity merge over the wire (v6) -------------------------
+
+
+def _edge_setup(store):
+    ep, unit = seed(store)
+    other = add_draft(store, ep.id, draft("Everyone agreed"), valid_from=WHEN)
+    edge = store.add_edge(unit.id, other.id, kind="related")
+    return ep, unit, other, edge
+
+
+def test_concurrent_edge_invalidation_converges_on_min(tmp_path):
+    """Two devices close the same edge at different instants: every apply
+    order converges on the earliest close (min valid_to)."""
+    early = WHEN + timedelta(days=1)
+    late = WHEN + timedelta(days=2)
+
+    a = Store(":memory:")
+    _edge_setup(a)
+    setup_envs = drain(a)
+    b = Store(":memory:")
+    for env in setup_envs:  # identical rows on both devices
+        assert not b.apply_change(env).startswith("quarantined")
+    edge_id = a.list_edges()[0].id
+    a.invalidate_edge(edge_id, at=late)
+    b.invalidate_edge(edge_id, at=early)
+    env_a, env_b = drain(a)[0], drain(b)[0]
+
+    assert a.apply_change(env_b) == "applied"       # early beats late
+    assert b.apply_change(env_a) == "skipped"       # late loses to early
+    assert a.list_edges()[0].valid_to == early
+    assert b.list_edges()[0].valid_to == early
+
+
+def test_pre_v6_edge_payload_still_validates():
+    """Old wire payloads without the temporal fields apply cleanly."""
+    store = Store(":memory:")
+    ep, unit, other, edge = _edge_setup(store)
+    envs = drain(store)
+    edge_env = [e for e in envs if e["table"] == "edges"][0]
+    edge_env["payload"].pop("valid_from")
+    edge_env["payload"].pop("valid_to")
+    edge_env["payload"]["id"] = "edge_oldwire"
+    edge_env["row_id"] = "edge_oldwire"
+    # different (from,to,kind) so the UNIQUE doesn't skip it
+    edge_env["payload"]["kind"] = "spawned"
+    assert store.apply_change(edge_env) == "applied"
+    store.close()
+
+
+def test_concurrent_entity_merges_converge_on_smaller_id():
+    """Two devices merge the same duplicate into different canonicals —
+    the smaller target id wins deterministically on both."""
+    from vetromar.schema import Entity
+
+    a = Store(":memory:")
+    b = Store(":memory:")
+    # identical entity rows on both devices (as replication would produce)
+    for name, eid in (("Priya", "ent_aaa"), ("Priya K", "ent_bbb"), ("priya.k", "ent_ccc")):
+        for s in (a, b):
+            s.add_entity(Entity(id=eid, name=name, type="person"))
+    drain(a), drain(b)
+    a.update_entity_profile("ent_ccc", merged_into="ent_aaa")
+    b.update_entity_profile("ent_ccc", merged_into="ent_bbb")
+    env_a, env_b = drain(a)[0], drain(b)[0]
+    assert a.apply_change(env_b) == "skipped"   # ent_aaa < ent_bbb, keep local
+    assert b.apply_change(env_a) == "applied"   # take the smaller id
+    assert a.get_entity("ent_ccc").merged_into == "ent_aaa"
+    assert b.get_entity("ent_ccc").merged_into == "ent_aaa"
+    a.close(), b.close()

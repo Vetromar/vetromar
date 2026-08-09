@@ -1,4 +1,4 @@
--- Vetromar store v5: graph-shaped, bi-temporal, provenance-carrying knowledge
+-- Vetromar store v6: graph-shaped, bi-temporal, provenance-carrying knowledge
 -- store over SQLite. Typed nodes (units, entities) + episodes (raw layer) +
 -- typed edges. `payload` columns hold the full model JSON (source of truth);
 -- the other columns are denormalized copies for filtering/indexing.
@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS edges (
     ref        TEXT,              -- verbatim mention string (mentions/about edges)
     rationale  TEXT,
     created_at TEXT NOT NULL,
+    valid_from TEXT,              -- NULL reads as created_at
+    valid_to   TEXT,              -- set when the relation stops holding; NULL while current
     UNIQUE (from_id, to_id, kind)
 );
 
@@ -112,6 +114,14 @@ CREATE TABLE IF NOT EXISTS unit_refs (
 
 CREATE INDEX IF NOT EXISTS idx_unit_refs_norm ON unit_refs(ref_norm);
 
+-- Entity embeddings for the entity retrieval channel and dedup candidates
+-- (name + aliases + summary). Derived, never replicated; a vec_entities vec0
+-- mirror is created lazily at runtime like vec_units.
+CREATE TABLE IF NOT EXISTS entity_vectors (
+    entity_id TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL
+);
+
 -- Workspace replication (M14). Every knowledge write appends to `changelog`
 -- (the push outbox) in the same transaction; derived tables (units_fts,
 -- unit_vectors) and per-source sync_state are never replicated.
@@ -144,4 +154,4 @@ CREATE TABLE IF NOT EXISTS replication_quarantine (
     received_at TEXT NOT NULL
 );
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;

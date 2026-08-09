@@ -53,7 +53,9 @@ class LinkReport:
     entities_created: int = 0
     relations: int = 0
     superseded: int = 0
+    merged: int = 0
     errors: list[str] = field(default_factory=list)
+    created_entities: list[Entity] = field(default_factory=list)
 
 
 def auto_link(store: Store, units: list[Unit], config: Config | None = None) -> LinkReport:
@@ -70,6 +72,17 @@ def auto_link(store: Store, units: list[Unit], config: Config | None = None) -> 
         _fenced(report, "llm-relations", lambda: _link_related_llm(store, units, config, report))
     else:
         _fenced(report, "embed-relations", lambda: _link_related_embed(store, units, report))
+    if report.created_entities:
+        # Freshly auto-created identities are the dedup hot spot (the same
+        # person arriving under a new ref) — sweep just those, fenced.
+        from vetromar.linking.dedupe import dedupe_entities
+
+        def _dedupe() -> None:
+            dedupe_report = dedupe_entities(store, config, seeds=report.created_entities)
+            report.merged += dedupe_report.merged
+            report.errors.extend(dedupe_report.errors)
+
+        _fenced(report, "dedupe", _dedupe)
     return report
 
 
@@ -106,6 +119,7 @@ def _resolve_person_mentions(store: Store, units: list[Unit], report: LinkReport
                     rationale="entity auto-created from unresolved named ref",
                 )
                 report.entities_created += 1
+                report.created_entities.append(entity)
             report.mentions += 1
 
 
@@ -147,6 +161,7 @@ def _resolve_llm_mentions(store: Store, units: list[Unit], config: Config, repor
                 Entity(name=mention.name, type=mention.type, aliases=[mention.ref])
             )
             report.entities_created += 1
+            report.created_entities.append(entity)
         store.add_edge(
             unit.id, entity.id, kind="about",
             method="auto-llm", confidence=mention.confidence, ref=mention.ref,
@@ -155,8 +170,38 @@ def _resolve_llm_mentions(store: Store, units: list[Unit], config: Config, repor
 
 
 def _candidates(store: Store, unit: Unit, exclude: set[str]) -> list[Unit]:
-    hits = hybrid.search(store, unit.content, k=CANDIDATES_PER_UNIT * 2, current_only=True)
-    return [h.unit for h in hits if h.unit.id not in exclude][:CANDIDATES_PER_UNIT]
+    """Prior units worth judging against a new one: KNN neighbors of the
+    unit's own just-written embedding, then units sharing a named ref
+    (entity overlap via the indexed unit_refs rows). Cheaper and sharper
+    than running a full hybrid text search per unit; falls back to hybrid
+    search when the embedder was unavailable at index time."""
+    from vetromar.store.store import _norm_ref
+
+    blob = store.get_embedding(unit.id)
+    if blob is None:
+        hits = hybrid.search(store, unit.content, k=CANDIDATES_PER_UNIT * 2, current_only=True)
+        return [h.unit for h in hits if h.unit.id not in exclude][:CANDIDATES_PER_UNIT]
+    candidate_ids: list[str] = []
+    for uid, _dist in store.vector_topk(blob, n=CANDIDATES_PER_UNIT * 3):
+        if uid != unit.id and uid not in exclude:
+            candidate_ids.append(uid)
+    ref_norms = sorted(
+        _norm_ref(r) for r in unit_refs(unit) if not SPEAKER_LABEL.fullmatch(r)
+    )
+    if ref_norms:
+        placeholders = ",".join("?" * len(ref_norms))
+        rows = store._conn.execute(
+            f"SELECT DISTINCT unit_id FROM unit_refs WHERE ref_norm IN ({placeholders})",  # noqa: S608
+            ref_norms,
+        ).fetchall()
+        for row in rows:
+            uid = row["unit_id"]
+            if uid != unit.id and uid not in exclude and uid not in candidate_ids:
+                candidate_ids.append(uid)
+    allowed = store.filter_unit_ids(candidate_ids, current_only=True)
+    ordered = [uid for uid in candidate_ids if uid in allowed][:CANDIDATES_PER_UNIT]
+    by_id = {u.id: u for u in store.get_units(ordered)}
+    return [by_id[uid] for uid in ordered if uid in by_id]
 
 
 def _link_related_llm(store: Store, units: list[Unit], config: Config, report: LinkReport) -> None:
@@ -189,6 +234,14 @@ def _link_related_llm(store: Store, units: list[Unit], config: Config, report: L
             report.relations += 1
             if verdict.relation == "supersedes":
                 _maybe_auto_supersede(store, new, existing, verdict.confidence, report)
+            elif verdict.relation == "contradicts":
+                # A relation judged contradictory can't also stand as open
+                # 'related' — close any such prior edge between the pair
+                # (temporal edge semantics; the units themselves stay open,
+                # contradiction alone never closes unit validity).
+                for edge in store.edges_for(existing.id, kind="related", current_only=True):
+                    if new.id in (edge.from_id, edge.to_id):
+                        store.invalidate_edge(edge.id, at=new.valid_from)
 
 
 def _maybe_auto_supersede(

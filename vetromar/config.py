@@ -181,6 +181,13 @@ class Config:
         default_factory=lambda: int(os.environ.get("VETROMAR_AUTO_SYNC_INTERVAL_MINUTES", "60"))
     )
 
+    # Optional local cross-encoder rerank over fused search results. Off by
+    # default: it downloads a small ONNX model on first use and adds per-query
+    # latency — worth it on big stores, one toggle otherwise.
+    rerank_enabled: bool = field(
+        default_factory=lambda: _as_bool(os.environ.get("VETROMAR_RERANK_ENABLED", ""))
+    )
+
     # First-run onboarding (desktop UI). Independent flags: replaying the tour
     # must not resurrect a dismissed checklist, and vice versa.
     onboarding_tour_done: bool = field(

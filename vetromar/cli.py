@@ -360,6 +360,25 @@ def ingest(
             typer.echo(f"  {u.id}  [{u.type}]  {u.content}")
 
 
+@app.command("dedupe-entities")
+def dedupe_entities_cmd():
+    """Merge duplicate entities across the store (same person under several
+    refs). Redirect-based: aliases union into the older entity, reads follow
+    the redirect, edges and history stay put."""
+    from vetromar.linking.dedupe import dedupe_entities
+
+    config = load_config()
+    config.ensure_dirs()
+    store = _open_store()
+    report = dedupe_entities(store, config)
+    typer.echo(
+        f"{report.merged} entit{'y' if report.merged == 1 else 'ies'} merged"
+        + (f" ({report.llm_pairs_judged} pair(s) judged)" if report.llm_pairs_judged else "")
+    )
+    for err in report.errors:
+        typer.secho(f"  {err}", fg=typer.colors.RED)
+
+
 # -- sources (Vetromar as MCP client) ----------------------------------------
 
 sources_app = typer.Typer(help="Connected MCP sources (the customer's stack).")

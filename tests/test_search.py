@@ -189,3 +189,27 @@ def test_vec0_knn_matches_numpy_scan(tmp_path):
     assert [uid for uid, _ in knn] == [uid for uid, _ in scan]
     assert knn[0][0] == units[5].id  # exact match is its own nearest neighbor
     store.close()
+
+
+def test_entity_channel_finds_units_by_person_name(store, stub_embedder):
+    """'priya.k' as a query surfaces the units linked to that entity even
+    though no unit text contains the name — the entity channel at work."""
+    from vetromar.ingest.manual import create_entity
+
+    ep = add_source_episode(store, title="Thread")
+    unit = _claim(store, ep.id, "Fix the connection pool timeout")
+    entity = create_entity(store, "Priya K")
+    store.add_alias(entity.id, "priya.k")
+    store.add_edge(unit.id, entity.id, kind="mentions")
+
+    results = hybrid.search(store, "priya.k", k=5)
+    assert [r.unit.id for r in results][0] == unit.id
+
+
+def test_graph_channel_expands_top_seeds(store, seeded, stub_embedder):
+    """A unit related to the top hit surfaces via the graph channel even when
+    neither text nor vectors match it."""
+    a, b, c = seeded
+    store.add_edge(a.id, c.id, kind="related")
+    results = hybrid.search(store, "connection pool", k=10)
+    assert c.id in [r.unit.id for r in results]

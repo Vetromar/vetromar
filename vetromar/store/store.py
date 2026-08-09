@@ -39,7 +39,7 @@ logger = logging.getLogger("vetromar.store.replication")
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text()
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # BGE-small embeddings: 384 float32 little-endian = 1536 bytes. The vec0 KNN
 # index is declared at this dimension; blobs of any other size stay usable
@@ -91,6 +91,14 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         " PRIMARY KEY (unit_id, ref_norm))",
         "CREATE INDEX IF NOT EXISTS idx_unit_refs_norm ON unit_refs(ref_norm)",
     ),
+    # v5 -> v6 (Graphiti-parity semantics): temporal edges + entity vectors.
+    # NULL edge valid_from reads as created_at, so no backfill UPDATE. The
+    # edge ALTERs live in _MIGRATION_HOOKS[5] (ALTER has no IF EXISTS and
+    # partially-built old fixtures may lack the table).
+    5: (
+        "CREATE TABLE IF NOT EXISTS entity_vectors ("
+        " entity_id TEXT PRIMARY KEY, embedding BLOB NOT NULL)",
+    ),
 }
 
 
@@ -98,6 +106,25 @@ def _norm_ref(text: str) -> str:
     """Normalization for alias/ref lookups — matches resolve_alias's historic
     fuzzy tier (casefold + strip)."""
     return text.casefold().strip()
+
+
+def _topk_python(
+    rows: list[tuple[str, bytes]], query: bytes, n: int
+) -> list[tuple[str, float]]:
+    """Numpy cosine top-k over (id, blob) rows — the guaranteed floor when
+    sqlite-vec can't load. Returns (id, distance), lower = closer."""
+    import numpy as np
+
+    if not rows:
+        return []
+    q = np.frombuffer(query, dtype=np.float32)
+    ids = [row_id for row_id, _ in rows]
+    mat = np.stack([np.frombuffer(blob, dtype=np.float32) for _, blob in rows])
+    qn = q / max(float(np.linalg.norm(q)), 1e-9)
+    mn = mat / np.clip(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9, None)
+    sims = mn @ qn
+    order = np.argsort(-sims)[:n]
+    return [(ids[i], float(1.0 - sims[i])) for i in order]
 
 
 def _backfill_v5(conn: sqlite3.Connection) -> None:
@@ -133,9 +160,24 @@ def _backfill_v5(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Add the temporal columns to an existing edges table (a store without
+    one gets them from schema.sql when it's created)."""
+    tables = {
+        r[0]
+        for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "edges" not in tables:
+        return
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(edges)")}
+    if "valid_from" not in columns:
+        conn.execute("ALTER TABLE edges ADD COLUMN valid_from TEXT")
+        conn.execute("ALTER TABLE edges ADD COLUMN valid_to TEXT")
+
+
 # Post-SQL migration hooks: version -> callable(conn), run inside
 # _check_schema_version right after that version's SQL statements.
-_MIGRATION_HOOKS: dict[int, object] = {4: _backfill_v5}
+_MIGRATION_HOOKS: dict[int, object] = {4: _backfill_v5, 5: _migrate_v6}
 
 
 def _iso(dt: datetime) -> str:
@@ -242,27 +284,32 @@ class Store:
             return False
 
     def _ensure_vec_index(self) -> bool:
-        """Create + backfill the derived vec0 KNN table. unit_vectors (BLOB)
-        stays the source of truth: this table is rebuildable bookkeeping that
-        only exists on machines where sqlite-vec loads, so its absence can
-        never brick a store — vector_topk degrades to a scan without it."""
+        """Create + backfill the derived vec0 KNN tables. The BLOB tables
+        (unit_vectors / entity_vectors) stay the source of truth: vec0 is
+        rebuildable bookkeeping that only exists on machines where sqlite-vec
+        loads, so its absence can never brick a store — the topk queries
+        degrade to a scan without it."""
         try:
-            self._conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS vec_units USING vec0("
-                f" unit_id TEXT PRIMARY KEY, embedding float[{EMBED_DIM}]"
-                " distance_metric=cosine)"
-            )
-            missing = self._conn.execute(
-                "SELECT uv.unit_id, uv.embedding FROM unit_vectors uv"
-                " LEFT JOIN vec_units vu ON vu.unit_id = uv.unit_id"
-                " WHERE vu.unit_id IS NULL AND length(uv.embedding) = ?",
-                (_EMBED_BYTES,),
-            ).fetchall()
-            for row in missing:
+            for vec_table, blob_table, key in (
+                ("vec_units", "unit_vectors", "unit_id"),
+                ("vec_entities", "entity_vectors", "entity_id"),
+            ):
                 self._conn.execute(
-                    "INSERT INTO vec_units (unit_id, embedding) VALUES (?, ?)",
-                    (row["unit_id"], row["embedding"]),
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {vec_table} USING vec0("
+                    f" {key} TEXT PRIMARY KEY, embedding float[{EMBED_DIM}]"
+                    " distance_metric=cosine)"
                 )
+                missing = self._conn.execute(
+                    f"SELECT b.{key} AS key, b.embedding FROM {blob_table} b"  # noqa: S608
+                    f" LEFT JOIN {vec_table} v ON v.{key} = b.{key}"
+                    f" WHERE v.{key} IS NULL AND length(b.embedding) = ?",
+                    (_EMBED_BYTES,),
+                ).fetchall()
+                for row in missing:
+                    self._conn.execute(
+                        f"INSERT INTO {vec_table} ({key}, embedding) VALUES (?, ?)",  # noqa: S608
+                        (row["key"], row["embedding"]),
+                    )
             self._conn.commit()
             return True
         except Exception:  # noqa: BLE001 — older extension builds lack text
@@ -563,7 +610,10 @@ class Store:
 
     def supersede(self, old_id: str, new_id: str) -> Unit:
         """Close validity on `old_id` as of the new unit's `valid_from`.
-        History is never mutated — the old unit stays, bounded in validity."""
+        History is never mutated — the old unit stays, bounded in validity.
+        The old unit's still-open edges close at the same instant (a relation
+        asserted by a non-current unit is not current), except edges touching
+        the superseding unit itself — those are the new unit's assertions."""
         old = self.get_unit(old_id)
         new = self.get_unit(new_id)
         if old.valid_to is not None:
@@ -574,6 +624,19 @@ class Store:
             (_iso(old.valid_to), old.model_dump_json(), old_id),
         )
         self._record_change("units", "update", old_id, old.model_dump_json())
+        open_edges = self._conn.execute(
+            "SELECT * FROM edges WHERE (from_id = ? OR to_id = ?)"
+            " AND valid_to IS NULL AND from_id != ? AND to_id != ?",
+            (old_id, old_id, new_id, new_id),
+        ).fetchall()
+        for row in open_edges:
+            edge = self._edge_from_row(row)
+            edge.valid_to = old.valid_to
+            self._conn.execute(
+                "UPDATE edges SET valid_to = ? WHERE id = ?",
+                (_iso(edge.valid_to), edge.id),
+            )
+            self._record_change("edges", "update", edge.id, edge.model_dump_json())
         self._conn.commit()
         return old
 
@@ -692,6 +755,59 @@ class Store:
             units.append(Unit.model_validate_json(row["payload"]))
         return units
 
+    def put_entity_embedding(self, entity_id: str, embedding: bytes) -> None:
+        """Entity vector (name + aliases + summary) for the entity retrieval
+        channel and dedup candidates. Derived, never replicated."""
+        self._conn.execute(
+            "INSERT INTO entity_vectors (entity_id, embedding) VALUES (?, ?)"
+            " ON CONFLICT(entity_id) DO UPDATE SET embedding = excluded.embedding",
+            (entity_id, embedding),
+        )
+        if self.vec_knn and len(embedding) == _EMBED_BYTES:
+            self._conn.execute(
+                "DELETE FROM vec_entities WHERE entity_id = ?", (entity_id,)
+            )
+            self._conn.execute(
+                "INSERT INTO vec_entities (entity_id, embedding) VALUES (?, ?)",
+                (entity_id, embedding),
+            )
+        self._conn.commit()
+
+    def entities_missing_embedding(self) -> list[Entity]:
+        rows = self._conn.execute(
+            "SELECT e.payload AS payload FROM entities e"
+            " LEFT JOIN entity_vectors v ON v.entity_id = e.id"
+            " WHERE v.entity_id IS NULL"
+        ).fetchall()
+        return [Entity.model_validate_json(r["payload"]) for r in rows]
+
+    def entity_vector_topk(self, query: bytes, n: int = 10) -> list[tuple[str, float]]:
+        """Nearest entities by cosine DISTANCE — same fallback ladder as
+        vector_topk (vec0 KNN -> sqlite-vec scan -> numpy scan)."""
+        if self.vec_knn and len(query) == _EMBED_BYTES:
+            covered = self._conn.execute(
+                "SELECT (SELECT COUNT(*) FROM entity_vectors)"
+                " = (SELECT COUNT(*) FROM vec_entities)"
+            ).fetchone()[0]
+            if covered:
+                rows = self._conn.execute(
+                    "SELECT entity_id, distance FROM vec_entities"
+                    " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                    (query, n),
+                ).fetchall()
+                return [(r["entity_id"], r["distance"]) for r in rows]
+        if self.vec_available:
+            rows = self._conn.execute(
+                "SELECT entity_id, vec_distance_cosine(embedding, ?) AS dist"
+                " FROM entity_vectors ORDER BY dist LIMIT ?",
+                (query, n),
+            ).fetchall()
+            return [(r["entity_id"], r["dist"]) for r in rows]
+        rows = self._conn.execute(
+            "SELECT entity_id, embedding FROM entity_vectors"
+        ).fetchall()
+        return _topk_python([(r["entity_id"], r["embedding"]) for r in rows], query, n)
+
     def vector_topk(self, query: bytes, n: int = 50) -> list[tuple[str, float]]:
         """Nearest units by cosine DISTANCE (lower = closer): (unit_id, dist).
         vec0 KNN when the derived index fully covers unit_vectors (its chunked
@@ -719,19 +835,7 @@ class Store:
         return self._vector_topk_python(query, n)
 
     def _vector_topk_python(self, query: bytes, n: int) -> list[tuple[str, float]]:
-        import numpy as np
-
-        rows = self.list_embeddings()
-        if not rows:
-            return []
-        q = np.frombuffer(query, dtype=np.float32)
-        ids = [unit_id for unit_id, _ in rows]
-        mat = np.stack([np.frombuffer(blob, dtype=np.float32) for _, blob in rows])
-        qn = q / max(float(np.linalg.norm(q)), 1e-9)
-        mn = mat / np.clip(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9, None)
-        sims = mn @ qn
-        order = np.argsort(-sims)[:n]
-        return [(ids[i], float(1.0 - sims[i])) for i in order]
+        return _topk_python(self.list_embeddings(), query, n)
 
     # -- entities ------------------------------------------------------------
 
@@ -767,18 +871,62 @@ class Store:
         type: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
+        include_merged: bool = False,
     ) -> list[Entity]:
-        sql = "SELECT payload FROM entities"
+        sql = "SELECT payload FROM entities WHERE 1=1"
         args: list = []
         if type:
-            sql += " WHERE type = ?"
+            sql += " AND type = ?"
             args.append(type)
+        if not include_merged:
+            # merged_into lives only in the payload JSON (replication truth).
+            sql += " AND json_extract(payload, '$.merged_into') IS NULL"
         sql += " ORDER BY name"
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             args.extend([limit, offset])
         rows = self._conn.execute(sql, args).fetchall()
         return [Entity.model_validate_json(r["payload"]) for r in rows]
+
+    def resolve_entity(self, entity_id: str) -> Entity:
+        """Follow merged_into redirects to the canonical entity. Edges are
+        never rewritten on merge — every read that starts from an entity id
+        goes through here. Cycle-guarded (concurrent merges can race)."""
+        entity = self.get_entity(entity_id)
+        seen = {entity.id}
+        while entity.merged_into and entity.merged_into not in seen:
+            seen.add(entity.merged_into)
+            try:
+                entity = self.get_entity(entity.merged_into)
+            except StoreError:
+                break  # dangling redirect (replication lag) — stop here
+        return entity
+
+    def update_entity_profile(
+        self,
+        entity_id: str,
+        *,
+        summary: Optional[str] = None,
+        attributes: Optional[dict] = None,
+        merged_into: Optional[str] = None,
+    ) -> Entity:
+        """Update the mutable profile fields (summary / attributes /
+        merged_into redirect). Aliases go through add_alias. Records one
+        entity-update change; the apply door merges field-wise."""
+        entity = self.get_entity(entity_id)
+        if summary is not None:
+            entity.summary = summary
+        if attributes is not None:
+            entity.attributes = {**entity.attributes, **attributes}
+        if merged_into is not None:
+            entity.merged_into = merged_into
+        self._conn.execute(
+            "UPDATE entities SET payload = ? WHERE id = ?",
+            (entity.model_dump_json(), entity_id),
+        )
+        self._record_change("entities", "update", entity_id, entity.model_dump_json())
+        self._conn.commit()
+        return entity
 
     def add_alias(self, entity_id: str, alias: str) -> Entity:
         """Attach a ref string to an entity — 'Priya-in-Slack is
@@ -813,19 +961,27 @@ class Store:
                 " ORDER BY entity_id LIMIT 1",
                 (_norm_ref(ref),),
             ).fetchone()
-        return None if row is None else self.get_entity(row["entity_id"])
+        return None if row is None else self.resolve_entity(row["entity_id"])
 
     def units_by_entity(self, entity_id: str) -> list[Unit]:
         """Units that involve the entity: the union of its mentions/about
         edges (auto-linking) and the derived unit_refs rows over payload roles
         + evidence speakers/authors (covers units linked only by hand-curated
-        aliases). Indexed lookups — no full unit scan."""
-        entity = self.get_entity(entity_id)
+        aliases). Indexed lookups — no full unit scan. Follows merge
+        redirects and unions the edges of every entity merged into this one
+        (edges are never rewritten on merge)."""
+        entity = self.resolve_entity(entity_id)
+        merged_ids = [
+            e.id
+            for e in self.list_entities(include_merged=True)
+            if e.merged_into == entity.id
+        ]
         by_id: dict[str, Unit] = {}
-        for edge in self.edges_for(entity_id):
-            other = edge.from_id if edge.to_id == entity_id else edge.to_id
-            if other.startswith("unit_") and other not in by_id:
-                by_id[other] = self.get_unit(other)
+        for node_id in (entity.id, *merged_ids):
+            for edge in self.edges_for(node_id):
+                other = edge.from_id if edge.to_id == node_id else edge.to_id
+                if other.startswith("unit_") and other not in by_id:
+                    by_id[other] = self.get_unit(other)
         norms = sorted({_norm_ref(a) for a in {entity.name, *entity.aliases}})
         placeholders = ",".join("?" * len(norms))
         rows = self._conn.execute(
@@ -867,8 +1023,9 @@ class Store:
         )
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO edges"
-            " (id, from_id, to_id, kind, method, confidence, ref, rationale, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " (id, from_id, to_id, kind, method, confidence, ref, rationale,"
+            "  created_at, valid_from, valid_to)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 edge.id,
                 edge.from_id,
@@ -879,6 +1036,8 @@ class Store:
                 edge.ref,
                 edge.rationale,
                 _iso(edge.created_at),
+                _iso(edge.valid_from) if edge.valid_from else None,
+                _iso(edge.valid_to) if edge.valid_to else None,
             ),
         )
         if cur.rowcount > 0:
@@ -893,6 +1052,28 @@ class Store:
             return self._edge_from_row(row)
         return edge
 
+    def invalidate_edge(self, edge_id: str, at: Optional[datetime] = None) -> Edge:
+        """Close validity on an edge — the relation stopped holding at `at`
+        (now if omitted). History is never mutated: the edge stays, bounded.
+        Mirrors unit supersede; replication merges concurrent closes by
+        keeping the earliest (min valid_to, commutative)."""
+        row = self._conn.execute(
+            "SELECT * FROM edges WHERE id = ?", (edge_id,)
+        ).fetchone()
+        if row is None:
+            raise StoreError(f"edge not found: {edge_id}")
+        edge = self._edge_from_row(row)
+        if edge.valid_to is not None:
+            raise StoreError(f"edge already invalidated: {edge_id}")
+        edge.valid_to = at or datetime.now(timezone.utc)
+        self._conn.execute(
+            "UPDATE edges SET valid_to = ? WHERE id = ?",
+            (_iso(edge.valid_to), edge_id),
+        )
+        self._record_change("edges", "update", edge_id, edge.model_dump_json())
+        self._conn.commit()
+        return edge
+
     def _require_node(self, node_id: str) -> None:
         # Edges are polymorphic (no SQL FK possible) — existence is checked
         # here so auto-linking bugs can't silently accumulate dangling edges.
@@ -903,18 +1084,113 @@ class Store:
         else:
             raise StoreError(f"not a linkable node id (unit_*/ent_*): {node_id}")
 
-    def list_edges(self) -> list[Edge]:
-        rows = self._conn.execute("SELECT * FROM edges ORDER BY created_at").fetchall()
+    def list_edges(
+        self, current_only: bool = False, as_of: Optional[datetime] = None
+    ) -> list[Edge]:
+        sql = "SELECT * FROM edges WHERE 1=1"
+        args: list = []
+        sql += self._edge_temporal_clause(args, current_only, as_of)
+        sql += " ORDER BY created_at"
+        rows = self._conn.execute(sql, args).fetchall()
         return [self._edge_from_row(r) for r in rows]
 
-    def edges_for(self, node_id: str, kind: Optional[str] = None) -> list[Edge]:
+    def edges_for(
+        self,
+        node_id: str,
+        kind: Optional[str] = None,
+        *,
+        current_only: bool = False,
+        as_of: Optional[datetime] = None,
+    ) -> list[Edge]:
         sql = "SELECT * FROM edges WHERE (from_id = ? OR to_id = ?)"
         args: list = [node_id, node_id]
         if kind:
             sql += " AND kind = ?"
             args.append(kind)
+        sql += self._edge_temporal_clause(args, current_only, as_of)
         rows = self._conn.execute(sql, args).fetchall()
         return [self._edge_from_row(r) for r in rows]
+
+    def neighborhood(
+        self,
+        seed_ids: list[str],
+        hops: int = 1,
+        *,
+        kinds: Optional[list[str]] = None,
+        current_only: bool = False,
+        as_of: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> tuple[set[str], list[Edge]]:
+        """The n-hop neighborhood of the seed nodes: (node_ids, edges), via a
+        recursive CTE over the indexed edges table. Node-capped at `limit`
+        (nearest hops first) so a hub entity can't pull in the whole graph.
+        `hops` is clamped to 3 — shallow traversal is the workload; deeper
+        neighborhoods stop meaning anything."""
+        if not seed_ids:
+            return set(), []
+        hops = max(1, min(hops, 3))
+        kind_clause = ""
+        args: list = list(seed_ids)
+        args.append(hops)
+        if kinds:
+            kind_clause = f" AND e.kind IN ({','.join('?' * len(kinds))})"
+            args.extend(kinds)
+        temporal_args: list = []
+        temporal_clause = self._edge_temporal_clause(temporal_args, current_only, as_of)
+        temporal_clause = temporal_clause.replace("valid_from", "e.valid_from").replace(
+            "valid_to", "e.valid_to"
+        ).replace("created_at", "e.created_at")
+        args.extend(temporal_args)
+        args.append(limit)
+        rows = self._conn.execute(
+            f"""
+            WITH RECURSIVE reach(node_id, depth) AS (
+                SELECT value, 0 FROM (SELECT ? AS value{" UNION ALL SELECT ?" * (len(seed_ids) - 1)})
+                UNION
+                SELECT CASE WHEN e.from_id = r.node_id THEN e.to_id ELSE e.from_id END,
+                       r.depth + 1
+                FROM edges e JOIN reach r ON r.node_id IN (e.from_id, e.to_id)
+                WHERE r.depth < ?{kind_clause}{temporal_clause}
+            )
+            SELECT node_id, MIN(depth) AS depth FROM reach
+            GROUP BY node_id ORDER BY depth LIMIT ?
+            """,  # noqa: S608
+            args,
+        ).fetchall()
+        nodes = {r["node_id"] for r in rows}
+        if not nodes:
+            return nodes, []
+        node_placeholders = ",".join("?" * len(nodes))
+        edge_args: list = list(nodes) * 2
+        edge_kind_clause = ""
+        if kinds:
+            edge_kind_clause = f" AND kind IN ({','.join('?' * len(kinds))})"
+            edge_args.extend(kinds)
+        edge_temporal_args: list = []
+        edge_temporal = self._edge_temporal_clause(edge_temporal_args, current_only, as_of)
+        edge_args.extend(edge_temporal_args)
+        edge_rows = self._conn.execute(
+            f"SELECT * FROM edges WHERE from_id IN ({node_placeholders})"  # noqa: S608
+            f" AND to_id IN ({node_placeholders}){edge_kind_clause}{edge_temporal}",
+            edge_args,
+        ).fetchall()
+        return nodes, [self._edge_from_row(r) for r in edge_rows]
+
+    @staticmethod
+    def _edge_temporal_clause(
+        args: list, current_only: bool, as_of: Optional[datetime]
+    ) -> str:
+        # An edge's valid interval is [COALESCE(valid_from, created_at), valid_to).
+        sql = ""
+        if current_only:
+            sql += " AND valid_to IS NULL"
+        if as_of is not None:
+            sql += (
+                " AND COALESCE(valid_from, created_at) <= ?"
+                " AND (valid_to IS NULL OR valid_to > ?)"
+            )
+            args.extend([_iso(as_of), _iso(as_of)])
+        return sql
 
     @staticmethod
     def _edge_from_row(row: sqlite3.Row) -> Edge:
@@ -928,6 +1204,8 @@ class Store:
             ref=row["ref"],
             rationale=row["rationale"],
             created_at=row["created_at"],
+            valid_from=row["valid_from"],
+            valid_to=row["valid_to"],
         )
 
     # -- sync state (per-source pull watermarks) -----------------------------
@@ -1117,8 +1395,10 @@ class Store:
                 return self._apply_entity_insert(payload, row_id)
             if table == "entities" and op == "update":
                 return self._apply_entity_update(envelope, payload, row_id)
-            if table == "edges":
+            if table == "edges" and op == "insert":
                 return self._apply_edge_insert(envelope, payload, row_id)
+            if table == "edges" and op == "update":
+                return self._apply_edge_update(envelope, payload, row_id)
             return self._quarantine(envelope, "unknown-change-shape")
         finally:
             self._log_changes = was_logging
@@ -1212,20 +1492,46 @@ class Store:
         return "applied"
 
     def _apply_entity_update(self, envelope: dict, payload: dict, row_id: str) -> str:
+        """Field-wise entity merge:
+        - aliases: set union (commutative) — local order, then new remote.
+        - summary/attributes: take remote when it adds something local lacks
+          (concurrent different edits are last-applied-wins, like episode
+          renames — accepted, devices converge on the next edit).
+        - merged_into: set-once with a deterministic tie-break (smaller id
+          wins), so two devices merging the same duplicate differently still
+          converge — commutative."""
         if not self._row_exists("entities", row_id):
             return self._quarantine(envelope, "missing-row")
         remote = Entity.model_validate(payload)
         local = self.get_entity(row_id)
-        # Alias set-union merge (commutative): local order, then new remote.
+        changed = False
         new_aliases = [a for a in remote.aliases if a not in local.aliases]
-        if not new_aliases:
+        if new_aliases:
+            local.aliases.extend(new_aliases)
+            self._write_alias_rows(row_id, set(new_aliases))
+            changed = True
+        if remote.summary is not None and remote.summary != local.summary:
+            local.summary = remote.summary
+            changed = True
+        new_attrs = {
+            k: v for k, v in remote.attributes.items() if local.attributes.get(k) != v
+        }
+        if new_attrs:
+            local.attributes = {**local.attributes, **new_attrs}
+            changed = True
+        if remote.merged_into is not None and remote.merged_into != local.merged_into:
+            if local.merged_into is None:
+                local.merged_into = remote.merged_into
+                changed = True
+            elif remote.merged_into < local.merged_into:
+                local.merged_into = remote.merged_into
+                changed = True
+        if not changed:
             return "skipped"
-        local.aliases.extend(new_aliases)
         self._conn.execute(
             "UPDATE entities SET payload = ? WHERE id = ?",
             (local.model_dump_json(), row_id),
         )
-        self._write_alias_rows(row_id, set(new_aliases))
         self._conn.commit()
         return "applied"
 
@@ -1240,8 +1546,9 @@ class Store:
         # (from, to, kind) UNIQUE still dedupes.
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO edges"
-            " (id, from_id, to_id, kind, method, confidence, ref, rationale, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " (id, from_id, to_id, kind, method, confidence, ref, rationale,"
+            "  created_at, valid_from, valid_to)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 edge.id,
                 edge.from_id,
@@ -1252,7 +1559,33 @@ class Store:
                 edge.ref,
                 edge.rationale,
                 _iso(edge.created_at),
+                _iso(edge.valid_from) if edge.valid_from else None,
+                _iso(edge.valid_to) if edge.valid_to else None,
             ),
         )
         self._conn.commit()
         return "applied" if cur.rowcount > 0 else "skipped"
+
+    def _apply_edge_update(self, envelope: dict, payload: dict, row_id: str) -> str:
+        """Edge invalidation from another device. Same convergence rule as
+        unit supersede: keep min(valid_to) — commutative, every device
+        converges on the earliest close. Pre-v6 clients route these envelopes
+        into their edge-insert path, where the UNIQUE dedupe skips them —
+        version skew is non-corrupting, they just don't see invalidations."""
+        if not self._row_exists("edges", row_id):
+            return self._quarantine(envelope, "missing-row")
+        remote = Edge.model_validate(payload)
+        if remote.valid_to is None:
+            return "skipped"  # malformed update — nothing to close
+        row = self._conn.execute(
+            "SELECT * FROM edges WHERE id = ?", (row_id,)
+        ).fetchone()
+        local = self._edge_from_row(row)
+        if local.valid_to is not None and local.valid_to <= remote.valid_to:
+            return "skipped"
+        self._conn.execute(
+            "UPDATE edges SET valid_to = ? WHERE id = ?",
+            (_iso(remote.valid_to), row_id),
+        )
+        self._conn.commit()
+        return "applied"

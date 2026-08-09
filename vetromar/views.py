@@ -133,12 +133,17 @@ def episode_detail(store: Store, episode_id: str, include_raw: bool = False) -> 
     }
 
 
-def graph(store: Store) -> dict:
-    """The whole knowledge graph in one payload for the UI's graph view:
-    entities, units (with evidence summaries), episodes, and every edge.
-    The client assembles its abstraction layers from this — unit→episode
-    links derive from `episode_id`, evidence nodes from the `evidence`
-    lists. Sized for v0 stores (one team's knowledge)."""
+def graph(
+    store: Store,
+    seed: str | None = None,
+    hops: int = 2,
+    limit: int = 500,
+) -> dict:
+    """The knowledge graph payload for the UI's graph view: entities, units
+    (with evidence summaries), episodes, and edges. With `seed` (a unit_* or
+    ent_* id) the payload is scoped to the seed's n-hop neighborhood — the
+    scale-safe default path for big stores; without it, the whole graph
+    (the 'load all' escape hatch, fine for one-team stores)."""
     def _snippet(ev) -> str:
         text = getattr(ev, "text", None) or getattr(ev, "description", "") or ""
         return text[:120]
@@ -147,9 +152,23 @@ def graph(store: Store) -> dict:
         status = getattr(unit.payload, "status", None)
         return status.value if status is not None else None
 
+    if seed is not None:
+        node_ids, edges = store.neighborhood([seed], hops=hops, limit=limit)
+        entities = [
+            store.resolve_entity(nid) for nid in node_ids if nid.startswith("ent_")
+        ]
+        units = store.get_units([nid for nid in node_ids if nid.startswith("unit_")])
+        episode_ids = {u.provenance.episode_id for u in units}
+        episodes = [store.get_episode(eid) for eid in sorted(episode_ids)]
+    else:
+        entities = store.list_entities()
+        units = store.list_units()
+        episodes = store.list_episodes()
+        edges = store.list_edges()
+
     return {
         "entities": [
-            {"id": e.id, "name": e.name, "type": e.type} for e in store.list_entities()
+            {"id": e.id, "name": e.name, "type": e.type} for e in entities
         ],
         "units": [
             {
@@ -163,11 +182,11 @@ def graph(store: Store) -> dict:
                     {"kind": ev.kind, "text": _snippet(ev)} for ev in u.evidence
                 ],
             }
-            for u in store.list_units()
+            for u in units
         ],
         "episodes": [
             {"id": ep.id, "title": ep.title, "source_kind": ep.source_kind}
-            for ep in store.list_episodes()
+            for ep in episodes
         ],
         "edges": [
             {
@@ -176,7 +195,7 @@ def graph(store: Store) -> dict:
                 "kind": e.kind,
                 "confidence": e.confidence,
             }
-            for e in store.list_edges()
+            for e in edges
         ],
     }
 
@@ -214,7 +233,7 @@ def current_state(store: Store, entity_id: str | None = None) -> dict:
     for unit in current:
         entity_ids = {
             (e.from_id if e.to_id == unit.id else e.to_id)
-            for e in store.edges_for(unit.id)
+            for e in store.edges_for(unit.id, current_only=True)
             if e.kind in ("mentions", "about")
         }
         entity_ids = {i for i in entity_ids if i.startswith("ent_")}

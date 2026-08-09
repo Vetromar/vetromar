@@ -70,6 +70,21 @@ def search_units(
 
 
 @mcp.tool()
+def get_context(query: str, token_budget: int = 2000, as_of: str | None = None) -> dict:
+    """One token-budgeted context block answering "what does the store know
+    about this": current facts, the people/things involved, what changed or
+    was contradicted, and verbatim evidence — every line tagged with its unit
+    id for drill-down via get_unit. Prefer this over search_units when you
+    want ready-to-use context instead of raw records. Pass as_of (ISO
+    datetime) to time-travel the whole block."""
+    from vetromar.context import build_context
+
+    return build_context(
+        _get_store(), query, token_budget=token_budget, as_of=views.parse_as_of(as_of)
+    )
+
+
+@mcp.tool()
 def get_unit(unit_id: str) -> dict:
     """Fetch one unit with its provenance (episode) and its edges to other
     units/entities — the fused context, not just the record."""
@@ -185,6 +200,16 @@ def link_units(from_id: str, to_id: str, kind: str = "related") -> dict:
     fusion edge that makes knowledge traversable across sources."""
     store = _get_store()
     edge = store.add_edge(from_id, to_id, kind, method="pushed")
+    return json.loads(edge.model_dump_json())
+
+
+@mcp.tool()
+def invalidate_edge(edge_id: str, at: str | None = None) -> dict:
+    """WRITE: close validity on an edge — the relation stopped holding at
+    `at` (ISO datetime; now if omitted). History is never deleted; the edge
+    stays, bounded in time. Units are closed via supersede_unit, not this."""
+    store = _get_store()
+    edge = store.invalidate_edge(edge_id, at=views.parse_as_of(at))
     return json.loads(edge.model_dump_json())
 
 

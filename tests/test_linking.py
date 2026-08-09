@@ -302,3 +302,58 @@ def test_pair_prompts_are_chunked_and_windowed(store, stub_vectors, monkeypatch)
     assert sum(calls) == expected_pairs
     assert len(calls) > 1
     assert all(n <= auto.MAX_PAIRS_PER_CALL for n in calls)
+
+
+# -- entity dedup (redirect-based merge) --------------------------------------
+
+
+def test_exact_collision_dedupe_merges_without_llm(store, monkeypatch):
+    """Same-type entities sharing a normalized name merge in ANY mode — and
+    no provider is ever consulted for the exact tier."""
+    from vetromar.ingest.manual import create_entity
+    from vetromar.linking import dedupe as dedupe_mod
+
+    def no_llm(*args, **kwargs):
+        raise AssertionError("exact tier must not call the LLM")
+
+    monkeypatch.setattr(dedupe_mod, "_llm_tier", no_llm)
+    older = create_entity(store, "Priya K")
+    newer = create_entity(store, "priya k")  # normalized collision
+    report = dedupe_mod.dedupe_entities(store, LOCAL)
+
+    assert report.merged == 1
+    assert store.get_entity(newer.id).merged_into == older.id
+    canonical = store.resolve_entity(newer.id)
+    assert canonical.id == older.id
+    assert "priya k" in canonical.aliases
+    # resolve_alias follows the redirect
+    assert store.resolve_alias("priya k").id == older.id
+
+
+def test_units_by_entity_unions_across_merge(store):
+    from vetromar.ingest.manual import create_entity
+    from vetromar.linking.dedupe import merge_entities
+
+    ep = add_source_episode(store, title="Thread")
+    a_unit = _claim(store, ep.id, "Billing note one")
+    b_unit = _claim(store, ep.id, "Billing note two")
+    a = create_entity(store, "Priya K")
+    b = create_entity(store, "priya.k")
+    store.add_edge(a_unit.id, a.id, kind="mentions")
+    store.add_edge(b_unit.id, b.id, kind="mentions")
+
+    merge_entities(store, a.id, b.id)
+    got = {u.id for u in store.units_by_entity(a.id)}
+    assert got == {a_unit.id, b_unit.id}
+    # querying by the victim id lands on the same union
+    assert {u.id for u in store.units_by_entity(b.id)} == got
+
+
+def test_dedupe_runs_fenced_after_auto_link(store, stub_vectors):
+    """auto_link triggers the dedup pass for just-created entities and the
+    whole thing stays non-fatal."""
+    ep = add_source_episode(store, title="Thread")
+    unit = _claim(store, ep.id, "The billing rework starts", author="Priya K")
+    report = auto.auto_link(store, [unit], LOCAL)
+    assert report.entities_created == 1
+    assert report.errors == []

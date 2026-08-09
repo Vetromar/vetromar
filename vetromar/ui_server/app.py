@@ -855,13 +855,57 @@ def create_app() -> FastAPI:
             ]
         )
 
+    @app.get("/api/store/context")
+    def store_context(
+        query: str, token_budget: int = 2000, as_of: Optional[str] = None
+    ) -> dict:
+        from vetromar.context import build_context
+
+        return _with_store(
+            lambda s: build_context(
+                s, query, token_budget=token_budget, as_of=views.parse_as_of(as_of)
+            )
+        )
+
+    @app.post("/api/store/dedupe")
+    def store_dedupe() -> dict:
+        """Merge duplicate entities (redirect-based, history preserved). One
+        global run at a time — a second click attaches to the running job."""
+        job, started = _JOBS.create_sync_unless_active(
+            "entity-dedupe", {"source": "entity-dedupe"}, kind="dedupe"
+        )
+        if started:
+
+            def target(job: Job) -> dict:
+                from vetromar.linking.dedupe import dedupe_entities
+
+                config = load_config()
+                config.ensure_dirs()
+                store = Store(config.db_path)  # jobs open their own Store
+                try:
+                    report = dedupe_entities(store, config)
+                finally:
+                    store.close()
+                return {
+                    "merged": report.merged,
+                    "pairs_judged": report.llm_pairs_judged,
+                    "errors": report.errors,
+                }
+
+            _JOBS.start(job, target)
+        return {"job_id": job.id, "already_running": not started}
+
     @app.get("/api/store/current")
     def store_current(entity_id: Optional[str] = None) -> dict:
         return _with_store(lambda s: views.current_state(s, entity_id))
 
     @app.get("/api/store/graph")
-    def store_graph() -> dict:
-        return _with_store(views.graph)
+    def store_graph(
+        seed: Optional[str] = None, hops: int = 2, limit: int = 500
+    ) -> dict:
+        return _with_store(
+            lambda s: views.graph(s, seed=seed, hops=hops, limit=limit)
+        )
 
     _mount_frontend(app)
     return app

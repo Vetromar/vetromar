@@ -340,6 +340,18 @@ class Entity(BaseModel):
         description="All ref strings known to refer to this entity",
     )
     created_at: datetime = Field(default_factory=_now)
+    summary: Optional[str] = Field(
+        default=None, description="Short evolving description of who/what this is"
+    )
+    attributes: dict = Field(
+        default_factory=dict,
+        description="Open key-value attributes (email, handle, role, url, ...)",
+    )
+    merged_into: Optional[str] = Field(
+        default=None,
+        description="Set when deduplicated into another entity — reads follow"
+        " the redirect; edges are never rewritten",
+    )
 
 
 class Edge(BaseModel):
@@ -368,6 +380,15 @@ class Edge(BaseModel):
         default=None, description="Verbatim mention string, for mentions/about edges"
     )
     created_at: datetime = Field(default_factory=_now)
+    valid_from: Optional[datetime] = Field(
+        default=None,
+        description="When the linked relation began holding; None reads as created_at",
+    )
+    valid_to: Optional[datetime] = Field(
+        default=None,
+        description="Set when the relation stopped holding (invalidated, or an"
+        " endpoint unit was superseded); None while current",
+    )
 
 
 # ---------------------------------------------------------------------------

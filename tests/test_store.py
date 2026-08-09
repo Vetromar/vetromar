@@ -280,3 +280,61 @@ def test_v4_store_migrates_additively_to_v5(tmp_path):
     assert migrated.has_pending_embeddings()
     assert [u.id for u in migrated.units_pending_embedding()] == [unit.id]
     migrated.close()
+
+
+# -- temporal edges (v6) -----------------------------------------------------
+
+
+def test_invalidate_edge_round_trip(store):
+    ep = add_source_episode(store, title="Thread")
+    a = add_draft(store, ep.id, _ticket_draft("Claim A"))
+    b = add_draft(store, ep.id, _ticket_draft("Claim B"))
+    edge = store.add_edge(a.id, b.id, kind="related")
+    assert edge.valid_to is None
+
+    closed = store.invalidate_edge(edge.id, at=WHEN)
+    assert closed.valid_to == WHEN
+    # history preserved, filtered views work
+    assert store.edges_for(a.id, kind="related") != []
+    assert store.edges_for(a.id, kind="related", current_only=True) == []
+    before = WHEN.replace(hour=9)
+    assert store.edges_for(a.id, as_of=before) == []  # edge didn't exist yet then
+    with pytest.raises(StoreError):
+        store.invalidate_edge(edge.id)  # already closed
+    with pytest.raises(StoreError):
+        store.invalidate_edge("edge_nope")
+
+
+def test_supersede_closes_old_units_open_edges(store):
+    ep = add_source_episode(store, title="Thread")
+    old = add_draft(store, ep.id, _ticket_draft("Old direction"))
+    other = add_draft(store, ep.id, _ticket_draft("Bystander"))
+    entity = create_entity(store, "Priya K")
+    store.add_edge(old.id, entity.id, kind="mentions")
+    store.add_edge(old.id, other.id, kind="related")
+    new = add_draft(store, ep.id, _ticket_draft("New direction"))
+    supersedes_edge = store.add_edge(new.id, old.id, kind="supersedes")
+
+    closed = supersede(store, old.id, new.id)
+    # the old unit's own edges closed at the supersede instant...
+    for edge in store.edges_for(entity.id) + store.edges_for(other.id):
+        assert edge.valid_to == closed.valid_to
+    # ...but the new unit's supersedes assertion stays open
+    assert store.edges_for(new.id, kind="supersedes")[0].valid_to is None
+    assert supersedes_edge.id == store.edges_for(new.id, kind="supersedes")[0].id
+
+
+def test_entity_profile_and_merge_redirect(store):
+    a = create_entity(store, "Priya K")
+    b = create_entity(store, "priya.k")
+    store.update_entity_profile(a.id, summary="Payments lead", attributes={"team": "billing"})
+    store.update_entity_profile(b.id, merged_into=a.id)
+
+    got = store.get_entity(a.id)
+    assert got.summary == "Payments lead"
+    assert got.attributes == {"team": "billing"}
+    # reads follow the redirect
+    assert store.resolve_entity(b.id).id == a.id
+    # merged entities are hidden by default, listable on request
+    assert [e.id for e in store.list_entities()] == [a.id]
+    assert len(store.list_entities(include_merged=True)) == 2
