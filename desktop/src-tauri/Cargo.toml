@@ -1,6 +1,6 @@
 [package]
 name = "vetromar-desktop"
-version = "0.3.0"
+version = "0.4.0"
 description = "Vetromar desktop capture app"
 edition = "2021"
 rust-version = "1.77"
