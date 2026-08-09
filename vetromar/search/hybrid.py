@@ -51,11 +51,18 @@ def index_units(store: Store, units: list[Unit]) -> int:
 
 
 def ensure_indexed(store: Store) -> None:
-    """Lazy backfill: any unit without a vector gets one now (covers units
-    ingested while the embedder was unavailable, and pre-B stores)."""
-    missing = store.units_missing_embedding()
-    if missing:
-        index_units(store, missing)
+    """Lazy backfill: any unit still awaiting a vector gets one now (covers
+    units ingested while the embedder was unavailable, and migrated stores).
+    O(1) when nothing is pending — an EXISTS probe on the dirty set, not a
+    scan of every unit — so it's safe on every search."""
+    if not store.has_pending_embeddings():
+        return
+    while True:
+        batch = store.units_pending_embedding(limit=256)
+        if not batch:
+            return
+        if index_units(store, batch) == 0:
+            return  # embedder unavailable — the dirty set keeps them queued
 
 
 def matches_filters(
@@ -98,14 +105,34 @@ def search(
     current_only: bool = False,
     as_of: Optional[datetime] = None,
 ) -> list[ScoredUnit]:
-    """Ranked hybrid search with post-fusion filters."""
-    fts_hits = store.search_fts(query, k=CHANNEL_DEPTH)
+    """Ranked hybrid search. Filters are pushed into each channel (SQL for
+    FTS, bulk id-filtering with iterative deepening for vectors) so channel
+    depth means matching candidates; `matches_filters` stays as a post-fusion
+    backstop."""
+    filters = dict(
+        type=type,
+        status=status,
+        episode_id=episode_id,
+        method=method,
+        current_only=current_only,
+        as_of=as_of,
+    )
+    fts_hits = store.search_fts(query, k=CHANNEL_DEPTH, **filters)
 
     vec_hits: list[tuple[str, float]] = []
     try:
         ensure_indexed(store)
         query_vec = embedder.embed_query(query)
-        vec_hits = store.vector_topk(query_vec, n=CHANNEL_DEPTH)
+        # KNN can't pre-filter: fetch, drop filtered-out ids in one SQL pass,
+        # and if the surviving pool is short (most neighbors superseded, say)
+        # retry once at 8x depth — a two-step ladder, because brute-force KNN
+        # cost barely depends on k, so intermediate rungs only add scans.
+        for n in (CHANNEL_DEPTH, CHANNEL_DEPTH * 8):
+            raw_hits = store.vector_topk(query_vec, n=n)
+            allowed = store.filter_unit_ids([uid for uid, _ in raw_hits], **filters)
+            vec_hits = [(uid, dist) for uid, dist in raw_hits if uid in allowed]
+            if len(vec_hits) >= CHANNEL_DEPTH or len(raw_hits) < n:
+                break
     except EmbedderUnavailableError:
         pass  # FTS-only degrade, already logged at index time
 
@@ -121,19 +148,13 @@ def search(
     }
 
     by_id = {unit.id: unit for unit, _ in fts_hits}
+    vec_only = [uid for uid in fused if uid not in by_id]
+    by_id.update({unit.id: unit for unit in store.get_units(vec_only)})
     results: list[ScoredUnit] = []
     for unit_id, score in sorted(fused.items(), key=lambda kv: -kv[1]):
         unit = by_id.get(unit_id)
         if unit is None:
-            unit = store.get_unit(unit_id)
-        if matches_filters(
-            unit,
-            type=type,
-            status=status,
-            episode_id=episode_id,
-            method=method,
-            current_only=current_only,
-            as_of=as_of,
-        ):
+            continue  # vector index trailing the truth tables
+        if matches_filters(unit, **filters):
             results.append(ScoredUnit(unit=unit, score=score))
     return results[:k]

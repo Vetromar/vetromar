@@ -43,6 +43,8 @@ SPEAKER_LABEL = re.compile(r"SPEAKER_\d+")
 RELATED_COSINE_THRESHOLD = 0.80   # passage<->passage space (local tier)
 SUPERSEDE_CONFIDENCE = 0.80       # LLM confidence floor for auto-supersede
 CANDIDATES_PER_UNIT = 5
+MAX_PAIRS_PER_CALL = 24           # pair-verdict prompt size cap
+INTRA_BATCH_WINDOW = 8            # earlier same-batch units judged per unit
 
 
 @dataclass
@@ -166,23 +168,27 @@ def _link_related_llm(store: Store, units: list[Unit], config: Config, report: L
         # Earlier units of the SAME batch are candidates too: an in-meeting
         # reversal (a recalled prior decision + the decision reversing it,
         # extracted together) must be judged. Later-vs-earlier keeps the
-        # NEW/EXISTING direction aligned with source order.
-        for earlier in units[:i]:
+        # NEW/EXISTING direction aligned with source order. Windowed so a big
+        # ingest stays O(batch), not O(batch^2) — a reversal and the decision
+        # it reverses sit near each other in source order.
+        for earlier in units[max(0, i - INTRA_BATCH_WINDOW):i]:
             pairs.append((unit, earlier))
-    if not pairs:
-        return
-    verdicts = _llm_pairs(config, [(_unit_text(n), _unit_text(e)) for n, e in pairs])
-    for verdict in verdicts.verdicts:
-        if not (0 <= verdict.pair_index < len(pairs)) or verdict.relation == "none":
-            continue
-        new, existing = pairs[verdict.pair_index]
-        store.add_edge(
-            new.id, existing.id, kind=verdict.relation,
-            method="auto-llm", confidence=verdict.confidence, rationale=verdict.rationale,
-        )
-        report.relations += 1
-        if verdict.relation == "supersedes":
-            _maybe_auto_supersede(store, new, existing, verdict.confidence, report)
+    # Chunked prompts: one huge pair list in a single call degrades cheap
+    # models and hits output limits; verdict indices are per-chunk.
+    for start in range(0, len(pairs), MAX_PAIRS_PER_CALL):
+        chunk = pairs[start : start + MAX_PAIRS_PER_CALL]
+        verdicts = _llm_pairs(config, [(_unit_text(n), _unit_text(e)) for n, e in chunk])
+        for verdict in verdicts.verdicts:
+            if not (0 <= verdict.pair_index < len(chunk)) or verdict.relation == "none":
+                continue
+            new, existing = chunk[verdict.pair_index]
+            store.add_edge(
+                new.id, existing.id, kind=verdict.relation,
+                method="auto-llm", confidence=verdict.confidence, rationale=verdict.rationale,
+            )
+            report.relations += 1
+            if verdict.relation == "supersedes":
+                _maybe_auto_supersede(store, new, existing, verdict.confidence, report)
 
 
 def _maybe_auto_supersede(
@@ -221,7 +227,9 @@ def _link_related_embed(store: Store, units: list[Unit], report: LinkReport) -> 
             continue  # embedder unavailable — nothing to score with
         vec = np.frombuffer(blob, dtype=np.float32)
         vec = vec / max(float(np.linalg.norm(vec)), 1e-9)
-        for candidate in _candidates(store, unit, exclude=new_ids) + list(units[:i]):
+        for candidate in _candidates(store, unit, exclude=new_ids) + list(
+            units[max(0, i - INTRA_BATCH_WINDOW):i]
+        ):
             cand_blob = store.get_embedding(candidate.id)
             if cand_blob is None:
                 continue

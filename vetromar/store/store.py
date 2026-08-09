@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Optional
 
 from vetromar.errors import ConfigError
-from vetromar.extraction.validate import ExtractionGateError, validate_unit_evidence
+from vetromar.extraction.validate import (
+    ExtractionGateError,
+    normalized_haystack,
+    validate_unit_evidence,
+)
 from vetromar.schema import Edge, Entity, Episode, Unit
 from vetromar.workspace.wire import new_change_id
 
@@ -35,7 +39,13 @@ logger = logging.getLogger("vetromar.store.replication")
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# BGE-small embeddings: 384 float32 little-endian = 1536 bytes. The vec0 KNN
+# index is declared at this dimension; blobs of any other size stay usable
+# through the BLOB table + numpy fallback but are not KNN-indexed.
+EMBED_DIM = 384
+_EMBED_BYTES = EMBED_DIM * 4
 
 # Additive-only migrations from versions that shipped with real customer data.
 # v2 was the first schema real stores ran on, so v2 -> v3 migrates in place;
@@ -63,7 +73,69 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         " change_id TEXT PRIMARY KEY, envelope TEXT NOT NULL, reason TEXT NOT NULL,"
         " received_at TEXT NOT NULL)",
     ),
+    # v4 -> v5 (graph scale): derived lookup tables so search and linking stop
+    # scanning whole tables. The CREATEs match schema.sql; the backfills live
+    # in _MIGRATION_HOOKS[4] (they need Python for casefolding/payload parsing
+    # and existence guards for partially-built old stores).
+    4: (
+        "CREATE TABLE IF NOT EXISTS embed_pending (unit_id TEXT PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS entity_aliases ("
+        " entity_id TEXT NOT NULL REFERENCES entities(id),"
+        " alias TEXT NOT NULL, alias_norm TEXT NOT NULL,"
+        " PRIMARY KEY (entity_id, alias))",
+        "CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm)",
+        "CREATE TABLE IF NOT EXISTS unit_refs ("
+        " unit_id TEXT NOT NULL REFERENCES units(id),"
+        " ref_norm TEXT NOT NULL,"
+        " PRIMARY KEY (unit_id, ref_norm))",
+        "CREATE INDEX IF NOT EXISTS idx_unit_refs_norm ON unit_refs(ref_norm)",
+    ),
 }
+
+
+def _norm_ref(text: str) -> str:
+    """Normalization for alias/ref lookups — matches resolve_alias's historic
+    fuzzy tier (casefold + strip)."""
+    return text.casefold().strip()
+
+
+def _backfill_v5(conn: sqlite3.Connection) -> None:
+    """Backfill half of the v4 -> v5 migration: populate embed_pending,
+    entity_aliases and unit_refs from the truth tables (idempotent — INSERT
+    OR IGNORE). Guarded on table existence: this hook also runs mid-chain for
+    pre-v4 stores whose earlier schemas the fixtures build minimally."""
+    tables = {
+        r[0]
+        for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if not {"units", "unit_vectors", "entities"} <= tables:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO embed_pending (unit_id)"
+        " SELECT u.id FROM units u LEFT JOIN unit_vectors v ON v.unit_id = u.id"
+        " WHERE v.unit_id IS NULL"
+    )
+    for row in conn.execute("SELECT id, payload FROM entities").fetchall():
+        entity = Entity.model_validate_json(row["payload"])
+        for alias in {entity.name, *entity.aliases}:
+            conn.execute(
+                "INSERT OR IGNORE INTO entity_aliases (entity_id, alias, alias_norm)"
+                " VALUES (?, ?, ?)",
+                (entity.id, alias, _norm_ref(alias)),
+            )
+    for row in conn.execute("SELECT id, payload FROM units").fetchall():
+        unit = Unit.model_validate_json(row["payload"])
+        for ref in unit_refs(unit):
+            conn.execute(
+                "INSERT OR IGNORE INTO unit_refs (unit_id, ref_norm) VALUES (?, ?)",
+                (unit.id, _norm_ref(ref)),
+            )
+
+
+# Post-SQL migration hooks: version -> callable(conn), run inside
+# _check_schema_version right after that version's SQL statements.
+_MIGRATION_HOOKS: dict[int, object] = {4: _backfill_v5}
 
 
 def _iso(dt: datetime) -> str:
@@ -136,10 +208,19 @@ class Store:
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        if str(db_path) != ":memory:":
+            # WAL so the single writer stops blocking per-request reader
+            # Stores (ui_server opens one per route); NORMAL sync is safe
+            # under WAL and skips an fsync per transaction.
+            self._conn.execute("PRAGMA journal_mode = WAL")
+            self._conn.execute("PRAGMA busy_timeout = 5000")
+            self._conn.execute("PRAGMA synchronous = NORMAL")
         self._check_schema_version(db_path)
         self._conn.executescript(_SCHEMA_SQL)
         self._conn.commit()
         self.vec_available = self._load_sqlite_vec()
+        # vec0 KNN index over unit_vectors — only where the extension loads.
+        self.vec_knn = self.vec_available and self._ensure_vec_index()
         # Workspace replication: every knowledge write appends to the
         # changelog outbox unless we're applying a remote change.
         self._log_changes = True
@@ -160,6 +241,36 @@ class Store:
         except Exception:  # noqa: BLE001
             return False
 
+    def _ensure_vec_index(self) -> bool:
+        """Create + backfill the derived vec0 KNN table. unit_vectors (BLOB)
+        stays the source of truth: this table is rebuildable bookkeeping that
+        only exists on machines where sqlite-vec loads, so its absence can
+        never brick a store — vector_topk degrades to a scan without it."""
+        try:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS vec_units USING vec0("
+                f" unit_id TEXT PRIMARY KEY, embedding float[{EMBED_DIM}]"
+                " distance_metric=cosine)"
+            )
+            missing = self._conn.execute(
+                "SELECT uv.unit_id, uv.embedding FROM unit_vectors uv"
+                " LEFT JOIN vec_units vu ON vu.unit_id = uv.unit_id"
+                " WHERE vu.unit_id IS NULL AND length(uv.embedding) = ?",
+                (_EMBED_BYTES,),
+            ).fetchall()
+            for row in missing:
+                self._conn.execute(
+                    "INSERT INTO vec_units (unit_id, embedding) VALUES (?, ?)",
+                    (row["unit_id"], row["embedding"]),
+                )
+            self._conn.commit()
+            return True
+        except Exception:  # noqa: BLE001 — older extension builds lack text
+            # PKs / cosine metric; the BLOB scan paths still work.
+            logger.exception("vec0 index unavailable — vector search falls back to scan")
+            self._conn.rollback()
+            return False
+
     def _check_schema_version(self, db_path: Path) -> None:
         # Versions with real data migrate additively (_MIGRATIONS); anything
         # older gets a clear error instead of silent corruption.
@@ -175,6 +286,9 @@ class Store:
         while version in _MIGRATIONS:
             for stmt in _MIGRATIONS[version]:
                 self._conn.execute(stmt)
+            hook = _MIGRATION_HOOKS.get(version)
+            if hook is not None:
+                hook(self._conn)
             version += 1
             self._conn.execute(f"PRAGMA user_version = {version}")
             self._conn.commit()
@@ -269,11 +383,16 @@ class Store:
         ).fetchone()
         return None if row is None else self._episode_from_row(row)
 
-    def list_episodes(self) -> list[Episode]:
-        rows = self._conn.execute(
-            "SELECT id FROM episodes ORDER BY occurred_at"
-        ).fetchall()
-        return [self.get_episode(r["id"]) for r in rows]
+    def list_episodes(
+        self, limit: Optional[int] = None, offset: int = 0
+    ) -> list[Episode]:
+        sql = "SELECT * FROM episodes ORDER BY occurred_at"
+        args: list = []
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            args.extend([limit, offset])
+        rows = self._conn.execute(sql, args).fetchall()
+        return [self._episode_from_row(r) for r in rows]
 
     # -- units ---------------------------------------------------------------
 
@@ -294,10 +413,16 @@ class Store:
 
     def add_units(self, units: list[Unit]) -> list[Unit]:
         """Atomic batch: every unit is gate-validated first; then all rows land
-        in one transaction. A single gate failure rejects the whole batch."""
+        in one transaction. A single gate failure rejects the whole batch.
+        The episode haystack is fetched + normalized once per episode, not
+        once per unit — the gate itself is unchanged."""
+        haystacks: dict[str, Optional[str]] = {}
         for unit in units:
-            episode = self.get_episode(unit.provenance.episode_id)
-            validate_unit_evidence(unit, episode)
+            episode_id = unit.provenance.episode_id
+            episode = self.get_episode(episode_id)
+            if episode_id not in haystacks:
+                haystacks[episode_id] = normalized_haystack(episode)
+            validate_unit_evidence(unit, episode, haystack_norm=haystacks[episode_id])
         try:
             for unit in units:
                 self._insert_unit(unit)
@@ -329,6 +454,14 @@ class Store:
             "INSERT INTO units_fts (unit_id, text) VALUES (?, ?)",
             (unit.id, fts_text(unit)),
         )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO embed_pending (unit_id) VALUES (?)", (unit.id,)
+        )
+        for ref in unit_refs(unit):
+            self._conn.execute(
+                "INSERT OR IGNORE INTO unit_refs (unit_id, ref_norm) VALUES (?, ?)",
+                (unit.id, _norm_ref(ref)),
+            )
         self._record_change("units", "insert", unit.id, unit.model_dump_json())
 
     def get_unit(self, unit_id: str) -> Unit:
@@ -347,6 +480,8 @@ class Store:
         method: Optional[str] = None,
         current_only: bool = False,
         as_of: Optional[datetime] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> list[Unit]:
         sql = "SELECT payload FROM units WHERE 1=1"
         args: list = []
@@ -369,8 +504,62 @@ class Store:
             sql += " AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)"
             args.extend([_iso(as_of), _iso(as_of)])
         sql += " ORDER BY ingested_at"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            args.extend([limit, offset])
         rows = self._conn.execute(sql, args).fetchall()
         return [Unit.model_validate_json(r["payload"]) for r in rows]
+
+    def get_units(self, unit_ids: list[str]) -> list[Unit]:
+        """Batch fetch by id; missing ids are silently omitted (callers hold
+        ids from derived indexes that may trail the truth tables)."""
+        if not unit_ids:
+            return []
+        placeholders = ",".join("?" * len(unit_ids))
+        rows = self._conn.execute(
+            f"SELECT payload FROM units WHERE id IN ({placeholders})",  # noqa: S608
+            unit_ids,
+        ).fetchall()
+        return [Unit.model_validate_json(r["payload"]) for r in rows]
+
+    def filter_unit_ids(
+        self,
+        unit_ids: list[str],
+        *,
+        type: Optional[str] = None,
+        status: Optional[str] = None,
+        episode_id: Optional[str] = None,
+        method: Optional[str] = None,
+        current_only: bool = False,
+        as_of: Optional[datetime] = None,
+    ) -> set[str]:
+        """Which of `unit_ids` pass the given filters — one indexed query, no
+        payload deserialization. Lets search channels validate candidates in
+        bulk (iterative deepening) instead of loading each unit."""
+        if not unit_ids:
+            return set()
+        placeholders = ",".join("?" * len(unit_ids))
+        sql = f"SELECT id FROM units WHERE id IN ({placeholders})"  # noqa: S608
+        args: list = list(unit_ids)
+        if type:
+            sql += " AND type = ?"
+            args.append(type)
+        if status:
+            sql += " AND status = ?"
+            args.append(status)
+        if episode_id:
+            sql += " AND episode_id = ?"
+            args.append(episode_id)
+        if method:
+            sql += " AND method = ?"
+            args.append(method)
+        if current_only:
+            sql += " AND valid_to IS NULL"
+        if as_of is not None:
+            sql += " AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)"
+            args.extend([_iso(as_of), _iso(as_of)])
+        rows = self._conn.execute(sql, args).fetchall()
+        return {r["id"] for r in rows}
 
     def supersede(self, old_id: str, new_id: str) -> Unit:
         """Close validity on `old_id` as of the new unit's `valid_from`.
@@ -390,20 +579,51 @@ class Store:
 
     # -- full-text search ----------------------------------------------------
 
-    def search_fts(self, query: str, k: int = 20) -> list[tuple[Unit, float]]:
+    def search_fts(
+        self,
+        query: str,
+        k: int = 20,
+        *,
+        type: Optional[str] = None,
+        status: Optional[str] = None,
+        episode_id: Optional[str] = None,
+        method: Optional[str] = None,
+        current_only: bool = False,
+        as_of: Optional[datetime] = None,
+    ) -> list[tuple[Unit, float]]:
         """BM25-ranked full-text hits: (unit, score), best first. SQLite bm25
-        is lower-is-better; callers should treat score as opaque rank input."""
+        is lower-is-better; callers should treat score as opaque rank input.
+        Filters apply in SQL, so `k` means k MATCHING candidates — recall no
+        longer collapses as the superseded fraction grows."""
         match = _fts_match_expr(query)
         if match is None:
             return []
-        rows = self._conn.execute(
+        sql = (
             "SELECT u.payload AS payload, bm25(units_fts) AS score"
             " FROM units_fts JOIN units u ON u.id = units_fts.unit_id"
             " WHERE units_fts MATCH ?"
-            " ORDER BY bm25(units_fts)"
-            " LIMIT ?",
-            (match, k),
-        ).fetchall()
+        )
+        args: list = [match]
+        if type:
+            sql += " AND u.type = ?"
+            args.append(type)
+        if status:
+            sql += " AND u.status = ?"
+            args.append(status)
+        if episode_id:
+            sql += " AND u.episode_id = ?"
+            args.append(episode_id)
+        if method:
+            sql += " AND u.method = ?"
+            args.append(method)
+        if current_only:
+            sql += " AND u.valid_to IS NULL"
+        if as_of is not None:
+            sql += " AND u.valid_from <= ? AND (u.valid_to IS NULL OR u.valid_to > ?)"
+            args.extend([_iso(as_of), _iso(as_of)])
+        sql += " ORDER BY bm25(units_fts) LIMIT ?"
+        args.append(k)
+        rows = self._conn.execute(sql, args).fetchall()
         return [(Unit.model_validate_json(r["payload"]), r["score"]) for r in rows]
 
     # -- embeddings (written by the search layer) ----------------------------
@@ -414,6 +634,16 @@ class Store:
             " ON CONFLICT(unit_id) DO UPDATE SET embedding = excluded.embedding",
             (unit_id, embedding),
         )
+        self._conn.execute(
+            "DELETE FROM embed_pending WHERE unit_id = ?", (unit_id,)
+        )
+        if self.vec_knn and len(embedding) == _EMBED_BYTES:
+            # vec0 has no ON CONFLICT — delete-then-insert.
+            self._conn.execute("DELETE FROM vec_units WHERE unit_id = ?", (unit_id,))
+            self._conn.execute(
+                "INSERT INTO vec_units (unit_id, embedding) VALUES (?, ?)",
+                (unit_id, embedding),
+            )
         self._conn.commit()
 
     def get_embedding(self, unit_id: str) -> Optional[bytes]:
@@ -436,9 +666,49 @@ class Store:
         ).fetchall()
         return [Unit.model_validate_json(r["payload"]) for r in rows]
 
+    def has_pending_embeddings(self) -> bool:
+        """O(1) dirty check — replaces the per-search full-table probe."""
+        row = self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM embed_pending)"
+        ).fetchone()
+        return bool(row[0])
+
+    def units_pending_embedding(self, limit: int = 256) -> list[Unit]:
+        """A batch of units awaiting embedding, oldest first. Rows whose unit
+        vanished (defensive) are cleaned up rather than returned."""
+        rows = self._conn.execute(
+            "SELECT p.unit_id, u.payload FROM embed_pending p"
+            " LEFT JOIN units u ON u.id = p.unit_id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        units: list[Unit] = []
+        for row in rows:
+            if row["payload"] is None:
+                self._conn.execute(
+                    "DELETE FROM embed_pending WHERE unit_id = ?", (row["unit_id"],)
+                )
+                self._conn.commit()
+                continue
+            units.append(Unit.model_validate_json(row["payload"]))
+        return units
+
     def vector_topk(self, query: bytes, n: int = 50) -> list[tuple[str, float]]:
         """Nearest units by cosine DISTANCE (lower = closer): (unit_id, dist).
-        sqlite-vec in SQL when loadable, numpy scan otherwise — same results."""
+        vec0 KNN when the derived index fully covers unit_vectors (its chunked
+        SIMD scan replaces the sort-every-row query), else the sqlite-vec
+        distance function, else a numpy scan — same ordering in all three."""
+        if self.vec_knn and len(query) == _EMBED_BYTES:
+            covered = self._conn.execute(
+                "SELECT (SELECT COUNT(*) FROM unit_vectors)"
+                " = (SELECT COUNT(*) FROM vec_units)"
+            ).fetchone()[0]
+            if covered:
+                rows = self._conn.execute(
+                    "SELECT unit_id, distance FROM vec_units"
+                    " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                    (query, n),
+                ).fetchall()
+                return [(r["unit_id"], r["distance"]) for r in rows]
         if self.vec_available:
             rows = self._conn.execute(
                 "SELECT unit_id, vec_distance_cosine(embedding, ?) AS dist"
@@ -470,9 +740,19 @@ class Store:
             "INSERT INTO entities (id, type, name, payload) VALUES (?, ?, ?, ?)",
             (entity.id, entity.type, entity.name, entity.model_dump_json()),
         )
+        self._write_alias_rows(entity.id, {entity.name, *entity.aliases})
         self._record_change("entities", "insert", entity.id, entity.model_dump_json())
         self._conn.commit()
         return entity
+
+    def _write_alias_rows(self, entity_id: str, aliases: set[str]) -> None:
+        # Derived lookup rows (payload JSON stays the source of truth).
+        for alias in aliases:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO entity_aliases (entity_id, alias, alias_norm)"
+                " VALUES (?, ?, ?)",
+                (entity_id, alias, _norm_ref(alias)),
+            )
 
     def get_entity(self, entity_id: str) -> Entity:
         row = self._conn.execute(
@@ -482,13 +762,21 @@ class Store:
             raise StoreError(f"entity not found: {entity_id}")
         return Entity.model_validate_json(row["payload"])
 
-    def list_entities(self, type: Optional[str] = None) -> list[Entity]:
+    def list_entities(
+        self,
+        type: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> list[Entity]:
         sql = "SELECT payload FROM entities"
         args: list = []
         if type:
             sql += " WHERE type = ?"
             args.append(type)
         sql += " ORDER BY name"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            args.extend([limit, offset])
         rows = self._conn.execute(sql, args).fetchall()
         return [Entity.model_validate_json(r["payload"]) for r in rows]
 
@@ -502,6 +790,7 @@ class Store:
                 "UPDATE entities SET payload = ? WHERE id = ?",
                 (entity.model_dump_json(), entity_id),
             )
+            self._write_alias_rows(entity_id, {alias})
             self._record_change(
                 "entities", "update", entity_id, entity.model_dump_json()
             )
@@ -510,33 +799,44 @@ class Store:
 
     def resolve_alias(self, ref: str) -> Optional[Entity]:
         """Which entity (if any) a ref string denotes: exact name/alias match
-        first, then casefolded/stripped."""
-        entities = self.list_entities()
-        for entity in entities:
-            if ref == entity.name or ref in entity.aliases:
-                return entity
-        needle = ref.casefold().strip()
-        for entity in entities:
-            if needle == entity.name.casefold().strip() or any(
-                needle == a.casefold().strip() for a in entity.aliases
-            ):
-                return entity
-        return None
+        first, then casefolded/stripped. Two indexed lookups on the derived
+        entity_aliases rows; ties (duplicate same-name entities) resolve to
+        the smallest entity id, deterministically."""
+        row = self._conn.execute(
+            "SELECT entity_id FROM entity_aliases WHERE alias = ?"
+            " ORDER BY entity_id LIMIT 1",
+            (ref,),
+        ).fetchone()
+        if row is None:
+            row = self._conn.execute(
+                "SELECT entity_id FROM entity_aliases WHERE alias_norm = ?"
+                " ORDER BY entity_id LIMIT 1",
+                (_norm_ref(ref),),
+            ).fetchone()
+        return None if row is None else self.get_entity(row["entity_id"])
 
     def units_by_entity(self, entity_id: str) -> list[Unit]:
         """Units that involve the entity: the union of its mentions/about
-        edges (auto-linking) and a ref scan over payload roles + evidence
-        speakers/authors (covers units linked only by hand-curated aliases)."""
+        edges (auto-linking) and the derived unit_refs rows over payload roles
+        + evidence speakers/authors (covers units linked only by hand-curated
+        aliases). Indexed lookups — no full unit scan."""
         entity = self.get_entity(entity_id)
         by_id: dict[str, Unit] = {}
         for edge in self.edges_for(entity_id):
             other = edge.from_id if edge.to_id == entity_id else edge.to_id
             if other.startswith("unit_") and other not in by_id:
                 by_id[other] = self.get_unit(other)
-        refs = set(entity.aliases) | {entity.name}
-        for unit in self.list_units():
-            if unit.id not in by_id and unit_refs(unit) & refs:
-                by_id[unit.id] = unit
+        norms = sorted({_norm_ref(a) for a in {entity.name, *entity.aliases}})
+        placeholders = ",".join("?" * len(norms))
+        rows = self._conn.execute(
+            "SELECT DISTINCT unit_id FROM unit_refs"
+            f" WHERE ref_norm IN ({placeholders})",  # noqa: S608
+            norms,
+        ).fetchall()
+        for unit in self.get_units(
+            [r["unit_id"] for r in rows if r["unit_id"] not in by_id]
+        ):
+            by_id[unit.id] = unit
         return sorted(by_id.values(), key=lambda u: u.ingested_at)
 
     # -- edges ---------------------------------------------------------------
@@ -925,6 +1225,7 @@ class Store:
             "UPDATE entities SET payload = ? WHERE id = ?",
             (local.model_dump_json(), row_id),
         )
+        self._write_alias_rows(row_id, set(new_aliases))
         self._conn.commit()
         return "applied"
 

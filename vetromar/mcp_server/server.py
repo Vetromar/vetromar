@@ -78,11 +78,12 @@ def get_unit(unit_id: str) -> dict:
 
 
 @mcp.tool()
-def list_episodes() -> list[dict]:
-    """List all episodes (meetings, threads, docs, ...) in the store.
-    Raw content is omitted; use get_episode(include_raw=True) for it."""
+def list_episodes(limit: int | None = None, offset: int = 0) -> list[dict]:
+    """List episodes (meetings, threads, docs, ...) in the store, oldest
+    first. Raw content is omitted; use get_episode(include_raw=True) for it.
+    Pass limit/offset to page through a large store."""
     store = _get_store()
-    return [views.episode_dict(e) for e in store.list_episodes()]
+    return [views.episode_dict(e) for e in store.list_episodes(limit=limit, offset=offset)]
 
 
 @mcp.tool()
@@ -93,11 +94,17 @@ def get_episode(episode_id: str, include_raw: bool = False) -> dict:
 
 
 @mcp.tool()
-def list_entities(type: str | None = None) -> list[dict]:
+def list_entities(
+    type: str | None = None, limit: int | None = None, offset: int = 0
+) -> list[dict]:
     """List entities (people, projects, products, ...) and the ref strings
-    (aliases) known to denote each. Optionally filter by entity type."""
+    (aliases) known to denote each. Optionally filter by entity type; pass
+    limit/offset to page through a large store."""
     store = _get_store()
-    return [json.loads(e.model_dump_json()) for e in store.list_entities(type=type)]
+    return [
+        json.loads(e.model_dump_json())
+        for e in store.list_entities(type=type, limit=limit, offset=offset)
+    ]
 
 
 @mcp.tool()

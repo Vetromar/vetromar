@@ -89,7 +89,9 @@ def test_extract_from_raw_api_path_lands_derived_units(store, monkeypatch):
             evidence=[ExcerptEvidence(text="moving the launch to September", author=PersonRef(ref="marta"))],
         )
     ])
-    monkeypatch.setattr(generic_mod, "_call_model", lambda config, episode: result)
+    monkeypatch.setattr(
+        generic_mod, "_call_model", lambda config, episode, text, part=None: result
+    )
 
     units = extract_from_raw(store, ep, Config(backend="api", api_key="sk-test"))
     assert len(units) == 1

@@ -1,4 +1,4 @@
--- Vetromar store v3: graph-shaped, bi-temporal, provenance-carrying knowledge
+-- Vetromar store v5: graph-shaped, bi-temporal, provenance-carrying knowledge
 -- store over SQLite. Typed nodes (units, entities) + episodes (raw layer) +
 -- typed edges. `payload` columns hold the full model JSON (source of truth);
 -- the other columns are denormalized copies for filtering/indexing.
@@ -79,6 +79,39 @@ CREATE TABLE IF NOT EXISTS unit_vectors (
     embedding BLOB NOT NULL       -- float32 little-endian, written by the search layer
 );
 
+-- Units awaiting an embedding (dirty set). Written on unit insert, cleared by
+-- put_embedding — search checks EXISTS here instead of scanning every unit.
+-- Derived bookkeeping, never replicated. The vec_units vec0 KNN index is
+-- created lazily at runtime (only where the sqlite-vec extension loads), with
+-- unit_vectors as its source of truth.
+CREATE TABLE IF NOT EXISTS embed_pending (
+    unit_id TEXT PRIMARY KEY
+);
+
+-- Queryable copies of entity identity strings (name + aliases). The entity
+-- payload JSON stays the replicated source of truth; these rows make
+-- resolve_alias two indexed lookups instead of a full-table scan.
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id  TEXT NOT NULL REFERENCES entities(id),
+    alias      TEXT NOT NULL,
+    alias_norm TEXT NOT NULL,     -- casefolded + stripped
+    PRIMARY KEY (entity_id, alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias);
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm  ON entity_aliases(alias_norm);
+
+-- Queryable copies of the PersonRef strings each unit carries (payload roles
+-- + evidence speakers/authors) — lets units_by_entity hit an index instead of
+-- deserializing every unit. Derived from the unit payload, never replicated.
+CREATE TABLE IF NOT EXISTS unit_refs (
+    unit_id  TEXT NOT NULL REFERENCES units(id),
+    ref_norm TEXT NOT NULL,       -- casefolded + stripped
+    PRIMARY KEY (unit_id, ref_norm)
+);
+
+CREATE INDEX IF NOT EXISTS idx_unit_refs_norm ON unit_refs(ref_norm);
+
 -- Workspace replication (M14). Every knowledge write appends to `changelog`
 -- (the push outbox) in the same transaction; derived tables (units_fts,
 -- unit_vectors) and per-source sync_state are never replicated.
@@ -111,4 +144,4 @@ CREATE TABLE IF NOT EXISTS replication_quarantine (
     received_at TEXT NOT NULL
 );
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;

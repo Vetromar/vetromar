@@ -127,19 +127,37 @@ def derive_haystack(episode: "Episode") -> Optional[str]:
     return episode.raw
 
 
-def validate_unit_evidence(unit: "Unit", episode: "Episode") -> None:
+def normalized_haystack(episode: "Episode") -> Optional[str]:
+    """`derive_haystack` already whitespace-normalized — the exact string the
+    gate substring-checks against. Lets batch callers normalize a big raw
+    once instead of once per unit."""
+    raw_text = derive_haystack(episode)
+    return None if raw_text is None else _normalize(raw_text)
+
+
+_UNSET = object()
+
+
+def validate_unit_evidence(
+    unit: "Unit", episode: "Episode", *, haystack_norm=_UNSET
+) -> None:
     """The store-door invariant: >=1 evidence item, and every quote/excerpt is
     a literal (whitespace-normalized) substring of the episode's raw content.
     Datapoint evidence is structural only (shape enforced by the schema).
     Episodes without raw content skip the substring check but keep the
-    >=1-evidence requirement."""
+    >=1-evidence requirement.
+
+    `haystack_norm` optionally supplies a precomputed `normalized_haystack`
+    for the episode (None meaning "episode has no raw") — the gate itself is
+    unchanged, only the redundant re-normalization is skipped."""
     if not unit.evidence:
         raise EvidenceMissingError([unit.content])
 
-    raw_text = derive_haystack(episode)
-    if raw_text is None:
+    haystack = (
+        normalized_haystack(episode) if haystack_norm is _UNSET else haystack_norm
+    )
+    if haystack is None:
         return
-    haystack = _normalize(raw_text)
     offenders = [
         ev.text
         for ev in unit.evidence

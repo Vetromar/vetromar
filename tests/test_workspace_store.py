@@ -396,7 +396,9 @@ def test_v3_store_migrates_additively_to_v4(tmp_path):
     store.close()
 
     migrated = Store(db)
-    assert migrated._conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    from vetromar.store.store import SCHEMA_VERSION
+
+    assert migrated._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     # Data intact, outbox empty (pre-existing rows are seeded by bootstrap,
     # not by migration).
     assert migrated.get_unit(unit.id).id == unit.id

@@ -8,19 +8,23 @@ ConfigError beats silently bad extraction. The meeting pipeline is unaffected
 
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
 
 from vetromar.config import Config
 from vetromar.errors import ConfigError
+from vetromar.extraction.chunking import SINGLE_CALL_LIMIT, chunk_text
 from vetromar.extraction.repair import heal_draft_evidence
-from vetromar.extraction.validate import derive_haystack
+from vetromar.extraction.validate import _normalize, derive_haystack
 from vetromar.extraction.generic_prompt import (
     GENERIC_SYSTEM_PROMPT,
     build_generic_user_prompt,
 )
 from vetromar.schema import Episode, ExcerptEvidence, UnitDraft, UnitPayload
+
+logger = logging.getLogger("vetromar.extraction.generic")
 
 
 class GenericDraft(BaseModel):
@@ -42,7 +46,12 @@ class GenericExtractionResult(BaseModel):
     units: list[GenericDraft]
 
 
-def _call_model(config: Config, episode: Episode) -> GenericExtractionResult:
+def _call_model(
+    config: Config,
+    episode: Episode,
+    text: str,
+    part: Optional[tuple[int, int]] = None,
+) -> GenericExtractionResult:
     from vetromar.ai import get_provider, map_ai_error
 
     provider = get_provider(config)
@@ -50,7 +59,7 @@ def _call_model(config: Config, episode: Episode) -> GenericExtractionResult:
         return provider.parse_structured(
             system=GENERIC_SYSTEM_PROMPT,
             user=build_generic_user_prompt(
-                episode.source_kind, episode.title, episode.raw or ""
+                episode.source_kind, episode.title, text, part=part
             ),
             schema=GenericExtractionResult,
             max_tokens=16000,
@@ -62,10 +71,50 @@ def _call_model(config: Config, episode: Episode) -> GenericExtractionResult:
         raise
 
 
-def extract_from_raw(store, episode: Episode, config: Config) -> list:
+def _dedup_key(text: str) -> str:
+    return _normalize(text).casefold()
+
+
+def _is_duplicate(draft: UnitDraft, kept: UnitDraft) -> bool:
+    if draft.payload.kind != kept.payload.kind:
+        return False
+    if _dedup_key(draft.content) == _dedup_key(kept.content):
+        return True
+    draft_ev = _dedup_key(draft.evidence[0].text) if draft.evidence else ""
+    kept_ev = _dedup_key(kept.evidence[0].text) if kept.evidence else ""
+    return bool(draft_ev) and bool(kept_ev) and (draft_ev in kept_ev or kept_ev in draft_ev)
+
+
+def _dedupe_drafts(drafts: list[UnitDraft]) -> list[UnitDraft]:
+    """Cross-chunk dedup, deterministic and LLM-free: chunk overlap makes the
+    same claim show up twice at the seam — drop a later same-kind draft whose
+    content normalizes identically to an earlier one, or whose primary
+    evidence contains / is contained by an earlier draft's."""
+    kept: list[UnitDraft] = []
+    for draft in drafts:
+        if any(_is_duplicate(draft, k) for k in kept):
+            logger.info("CHUNK-DEDUP dropped duplicate unit: %r", draft.content)
+        else:
+            kept.append(draft)
+    return kept
+
+
+def extract_from_raw(
+    store,
+    episode: Episode,
+    config: Config,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> list:
     """Run generic extraction over an episode's stored raw text and land the
     resulting units (method='derived', gate-enforced, atomic). Returns the
-    stored units."""
+    stored units.
+
+    Sources up to SINGLE_CALL_LIMIT chars go to the model in one call (the
+    historic path, byte-identical). Longer raw is split into overlapping
+    verbatim chunks (extraction/chunking.py) with one call per chunk and a
+    deterministic cross-chunk dedup — chunking never touches the evidence
+    gate, which validates against the FULL episode raw as always.
+    `on_progress(done, total)` reports per-chunk progress when provided."""
     from vetromar.ingest.generic import ingest_units
 
     if config.backend != "api":
@@ -78,16 +127,33 @@ def extract_from_raw(store, episode: Episode, config: Config) -> list:
             f"Episode {episode.id} has no raw content to extract from.",
             hint="Re-ingest the source with its raw text attached.",
         )
-    result = _call_model(config, episode)
-    drafts = [
-        UnitDraft(
-            content=d.content,
-            reasoning=d.reasoning,
-            payload=d.payload,
-            evidence=list(d.evidence),
+    if len(episode.raw) <= SINGLE_CALL_LIMIT:
+        chunks = [episode.raw]
+    else:
+        chunks = chunk_text(episode.raw)
+        logger.info(
+            "chunked extraction: %d chars -> %d chunks (episode %s)",
+            len(episode.raw), len(chunks), episode.id,
         )
-        for d in result.units
-    ]
+    drafts: list[UnitDraft] = []
+    for i, chunk in enumerate(chunks):
+        result = _call_model(
+            config, episode, chunk,
+            part=(i + 1, len(chunks)) if len(chunks) > 1 else None,
+        )
+        drafts.extend(
+            UnitDraft(
+                content=d.content,
+                reasoning=d.reasoning,
+                payload=d.payload,
+                evidence=list(d.evidence),
+            )
+            for d in result.units
+        )
+        if on_progress is not None:
+            on_progress(i + 1, len(chunks))
+    if len(chunks) > 1:
+        drafts = _dedupe_drafts(drafts)
     # Near-miss excerpts snap to their literal raw span before the store-door
     # gate (cheap-model tolerance; the invariant itself is untouched).
     heal_draft_evidence(drafts, derive_haystack(episode))

@@ -812,9 +812,12 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/store/episodes")
-    def store_episodes() -> list[dict]:
+    def store_episodes(limit: Optional[int] = None, offset: int = 0) -> list[dict]:
         return _with_store(
-            lambda s: [views.episode_dict(e) for e in s.list_episodes()]
+            lambda s: [
+                views.episode_dict(e)
+                for e in s.list_episodes(limit=limit, offset=offset)
+            ]
         )
 
     @app.get("/api/store/episodes/{episode_id}")
@@ -833,9 +836,14 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/store/entities")
-    def store_entities(type: Optional[str] = None) -> list[dict]:
+    def store_entities(
+        type: Optional[str] = None, limit: Optional[int] = None, offset: int = 0
+    ) -> list[dict]:
         return _with_store(
-            lambda s: [json.loads(e.model_dump_json()) for e in s.list_entities(type=type)]
+            lambda s: [
+                json.loads(e.model_dump_json())
+                for e in s.list_entities(type=type, limit=limit, offset=offset)
+            ]
         )
 
     @app.get("/api/store/entities/{entity_id}/units")

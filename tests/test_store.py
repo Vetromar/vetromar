@@ -229,3 +229,54 @@ def test_fts_search_ranks_and_survives_hostile_queries(store):
     # raw agent text must never crash MATCH
     for hostile in ("re-architecture", "don't", "trailing OR", '"unbalanced', "-", "   "):
         store.search_fts(hostile)
+
+
+def test_list_pagination(store):
+    ep = add_source_episode(store, title="Thread")
+    for i in range(5):
+        add_draft(store, ep.id, _ticket_draft(f"Claim number {i}"))
+    for i in range(3):
+        add_source_episode(store, title=f"Thread {i}")
+    create_entity(store, "Priya K")
+    create_entity(store, "Sam")
+
+    all_units = store.list_units()
+    assert [u.id for u in store.list_units(limit=2, offset=1)] == [
+        u.id for u in all_units[1:3]
+    ]
+    assert len(store.list_episodes(limit=2)) == 2
+    assert len(store.list_episodes(limit=10, offset=3)) == 1
+    assert [e.name for e in store.list_entities(limit=1, offset=1)] == ["Sam"]
+
+
+def test_v4_store_migrates_additively_to_v5(tmp_path):
+    from vetromar.store import Store
+    from vetromar.store.store import SCHEMA_VERSION
+
+    db = tmp_path / "store.db"
+    store = Store(db)
+    ep = add_source_episode(store, title="Thread")
+    unit = add_draft(store, ep.id, _ticket_draft("Keep Stripe for now"))
+    entity = create_entity(store, "Priya K")
+    link_alias(store, entity.id, "priya.k")
+    # Rewind to a v4 store: drop the v5 derived tables and stamp the version.
+    store._conn.executescript(
+        "DROP TABLE embed_pending; DROP TABLE entity_aliases;"
+        " DROP TABLE unit_refs; PRAGMA user_version = 4;"
+    )
+    store._conn.commit()
+    store.close()
+
+    migrated = Store(db)
+    assert (
+        migrated._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    )
+    # entity_aliases backfilled: both tiers of resolve_alias work off SQL rows
+    assert migrated.resolve_alias("priya.k").id == entity.id
+    assert migrated.resolve_alias("PRIYA K").id == entity.id
+    # unit_refs backfilled: ref-only association still found (no edges exist)
+    assert [u.id for u in migrated.units_by_entity(entity.id)] == [unit.id]
+    # embed_pending backfilled: the unembedded unit is queued for the search layer
+    assert migrated.has_pending_embeddings()
+    assert [u.id for u in migrated.units_pending_embedding()] == [unit.id]
+    migrated.close()

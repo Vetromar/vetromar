@@ -49,10 +49,23 @@ content may be your wording; evidence text must never be.
 """
 
 
-def build_generic_user_prompt(source_kind: str, title: str, text: str) -> str:
-    return (
+def build_generic_user_prompt(
+    source_kind: str,
+    title: str,
+    text: str,
+    part: "tuple[int, int] | None" = None,
+) -> str:
+    prompt = (
         f'<source kind="{source_kind}" title="{title}">\n'
         f"{text}\n"
         "</source>\n\n"
         "Extract the knowledge units from this source."
     )
+    if part is not None:
+        i, n = part
+        prompt += (
+            f"\n\nNote: this is part {i} of {n} of a longer source, split only "
+            "for length. Extract every unit THIS part supports; evidence "
+            "excerpts must be verbatim from this part's text."
+        )
+    return prompt

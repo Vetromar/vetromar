@@ -54,7 +54,14 @@ def best_literal_span(text: str, haystack: str) -> str | None:
     if anchor.size < max(15, len(text) // 3):
         return None
 
-    expected_start = anchor.a - anchor.b
+    # All candidate boundaries live within _BOUNDARY_SLACK of the predicted
+    # span, so score against a slice around the anchor instead of the whole
+    # haystack — identical results, bounded work on document-sized sources.
+    window_lo = max(0, anchor.a - anchor.b - len(text) - _BOUNDARY_SLACK)
+    window_hi = min(len(haystack), anchor.a - anchor.b + 2 * len(text) + _BOUNDARY_SLACK)
+    offset, haystack = window_lo, haystack[window_lo:window_hi]
+
+    expected_start = (anchor.a - offset) - anchor.b
     expected_end = expected_start + len(text)
 
     def word_starts(lo: int, hi: int) -> list[int]:

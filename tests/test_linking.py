@@ -278,3 +278,27 @@ def test_units_by_entity_unions_edges_and_refs(store):
 
     found = {u.id for u in store.units_by_entity(priya.id)}
     assert found == {by_ref.id, by_edge.id}
+
+def test_pair_prompts_are_chunked_and_windowed(store, stub_vectors, monkeypatch):
+    """A big batch produces windowed intra-batch pairs (O(batch), not
+    O(batch^2)) sent in prompts of at most MAX_PAIRS_PER_CALL each."""
+    ep = add_source_episode(store, title="Big sync")
+    units = [_claim(store, ep.id, f"Billing observation number {i}") for i in range(30)]
+
+    from vetromar.linking.prompts import MentionResult
+
+    monkeypatch.setattr(auto, "_llm_mentions", lambda config, texts: MentionResult(mentions=[]))
+    monkeypatch.setattr(auto, "_candidates", lambda store_, unit, exclude: [])
+    calls = []
+
+    def fake_pairs(config, pairs):
+        calls.append(len(pairs))
+        return PairVerdicts(verdicts=[])
+
+    monkeypatch.setattr(auto, "_llm_pairs", fake_pairs)
+    auto.auto_link(store, units, API)
+
+    expected_pairs = sum(min(i, auto.INTRA_BATCH_WINDOW) for i in range(len(units)))
+    assert sum(calls) == expected_pairs
+    assert len(calls) > 1
+    assert all(n <= auto.MAX_PAIRS_PER_CALL for n in calls)
