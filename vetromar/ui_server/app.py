@@ -341,6 +341,56 @@ def create_app() -> FastAPI:
         _JOBS.start(job, lambda j: _run_pipeline_on(j, dest, title, occurred_at))
         return {"job_id": job.id}
 
+    @app.post("/api/documents")
+    async def upload_document(
+        file: UploadFile,
+        title: str = Form(""),
+        when: Optional[str] = Form(None),
+    ) -> dict:
+        occurred_at = _parse_when(when)
+        config = load_config()
+        config.ensure_dirs()
+        # Persist with the original suffix — the parser dispatches on it.
+        suffix = Path(file.filename or "upload").suffix.lower()
+        from vetromar.ingest.documents import SUPPORTED_SUFFIXES
+
+        if suffix not in SUPPORTED_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported document type {suffix or '(none)'} — "
+                f"supported: {', '.join(SUPPORTED_SUFFIXES)}",
+            )
+        documents_dir = config.db_path.parent / "documents"
+        documents_dir.mkdir(parents=True, exist_ok=True)
+        dest = documents_dir / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}{suffix}"
+        dest.write_bytes(await file.read())
+        doc_title = title.strip() or Path(file.filename or dest.name).stem
+
+        def target(job: Job) -> dict:
+            store = Store(config.db_path)  # jobs open their own Store
+            try:
+                job.log(f"parsing {dest.name}")
+
+                def progress(done: int, total: int) -> None:
+                    job.log(f"extracting part {done}/{total}")
+
+                episode, units = operations.ingest_document(
+                    store, config, dest,
+                    title=doc_title, occurred_at=occurred_at, on_progress=progress,
+                )
+                job.log("linking")
+                return {
+                    "episode_id": episode.id,
+                    "title": episode.title,
+                    "units": len(units),
+                }
+            finally:
+                store.close()
+
+        job = _JOBS.create("document")
+        _JOBS.start(job, target)
+        return {"job_id": job.id}
+
     @app.post("/api/record/start")
     def record_start(body: RecordStart) -> dict:
         occurred_at = _parse_when(body.when)

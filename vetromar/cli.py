@@ -360,6 +360,35 @@ def ingest(
             typer.echo(f"  {u.id}  [{u.type}]  {u.content}")
 
 
+@app.command("ingest-file")
+def ingest_file(
+    source: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, help="Document file (.pdf/.docx/.md/.txt)"
+    ),
+    title: Optional[str] = typer.Option(None, "--title", "-t", help="Defaults to the filename"),
+    when: Optional[str] = typer.Option(None, help="When the document dates from, ISO 8601"),
+):
+    """Ingest a document file: parse it locally, land it as a `document`
+    episode, and extract typed units whose evidence carries page/paragraph
+    locators."""
+    from vetromar import operations
+
+    config = load_config()
+    config.ensure_dirs()
+    store = _open_store()
+    ep, units = operations.ingest_document(
+        store, config, source, title=title, occurred_at=_parse_when(when)
+    )
+    typer.echo(f"created document episode {ep.id} ({ep.title})")
+    typer.echo(f"{len(units)} unit(s) extracted and stored")
+    for u in units:
+        locator = next(
+            (ev.locator for ev in u.evidence if getattr(ev, "locator", None)), None
+        )
+        suffix = f"  ({locator})" if locator else ""
+        typer.echo(f"  {u.id}  [{u.type}]  {u.content}{suffix}")
+
+
 @app.command("dedupe-entities")
 def dedupe_entities_cmd():
     """Merge duplicate entities across the store (same person under several

@@ -61,6 +61,14 @@ def build_generic_user_prompt(
         "</source>\n\n"
         "Extract the knowledge units from this source."
     )
+    if "email" in source_kind:
+        prompt += (
+            "\n\nEmail-specific guidance: headers (From/To/Cc) identify authors — "
+            "use the sender name exactly as written for evidence `author`. "
+            "Quoted-reply blocks repeat earlier messages: extract each claim "
+            "from its ORIGINAL occurrence only, never again from a quoted copy. "
+            "The subject line is context, not itself a claim."
+        )
     if part is not None:
         i, n = part
         prompt += (

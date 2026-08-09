@@ -104,6 +104,7 @@ def extract_from_raw(
     episode: Episode,
     config: Config,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    postprocess_drafts: Optional[Callable[[list[UnitDraft]], None]] = None,
 ) -> list:
     """Run generic extraction over an episode's stored raw text and land the
     resulting units (method='derived', gate-enforced, atomic). Returns the
@@ -114,7 +115,10 @@ def extract_from_raw(
     verbatim chunks (extraction/chunking.py) with one call per chunk and a
     deterministic cross-chunk dedup — chunking never touches the evidence
     gate, which validates against the FULL episode raw as always.
-    `on_progress(done, total)` reports per-chunk progress when provided."""
+    `on_progress(done, total)` reports per-chunk progress when provided.
+    `postprocess_drafts` runs after healing, before the store door — the hook
+    document ingestion uses to stamp structural locators on evidence (it may
+    annotate drafts but must never rewrite evidence text)."""
     from vetromar.ingest.generic import ingest_units
 
     if config.backend != "api":
@@ -157,4 +161,6 @@ def extract_from_raw(
     # Near-miss excerpts snap to their literal raw span before the store-door
     # gate (cheap-model tolerance; the invariant itself is untouched).
     heal_draft_evidence(drafts, derive_haystack(episode))
+    if postprocess_drafts is not None:
+        postprocess_drafts(drafts)
     return ingest_units(store, episode.id, drafts, method="derived", config=config)

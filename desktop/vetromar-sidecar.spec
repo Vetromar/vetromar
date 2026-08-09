@@ -34,6 +34,8 @@ _METADATA = [
     "onnxruntime",
     # Retrieval layer (engine v2): ONNX embeddings + SQL vector search.
     "fastembed", "sqlite-vec", "mmh3", "py-rust-stemmers", "loguru",
+    # Document parsing (P3): pure-Python, negligible next to torch.
+    "pypdf", "python-docx",
 ]
 for pkg in _METADATA:
     try:
@@ -77,6 +79,10 @@ _HEAVY = [
     "sqlite_vec",
     "onnxruntime",
     "tokenizers",
+    # Document parsing (P3). python-docx ships a default template as package
+    # data; pypdf is plain modules.
+    "pypdf",
+    "docx",
 ]
 for pkg in _HEAVY:
     try:

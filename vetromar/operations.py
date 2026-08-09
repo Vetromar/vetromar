@@ -29,6 +29,54 @@ from vetromar.errors import ConfigError
 Progress = Callable[[str, "int | None", "int | None"], None]
 
 
+def ingest_document(
+    store,
+    config: Config,
+    path: Path,
+    *,
+    title: str | None = None,
+    occurred_at: datetime | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+):
+    """Shared CLI/UI document ingestion: parse a PDF/DOCX/MD/TXT file, land
+    it as a `document` episode (content-hashed external_id so re-uploads are
+    rejected, not duplicated), run chunked generic extraction, and stamp
+    structural locators ("page:4") on the excerpt evidence. Returns
+    (episode, units)."""
+    import hashlib
+
+    from vetromar.extraction.generic import extract_from_raw
+    from vetromar.ingest.documents import parse_document, stamp_locators
+    from vetromar.ingest.generic import ingest_episode
+    from vetromar.store import StoreError
+
+    parsed = parse_document(path)
+    digest = hashlib.sha256(parsed.text.encode()).hexdigest()[:16]
+    try:
+        episode = ingest_episode(
+            store,
+            title=title or path.stem,
+            source_kind="document",
+            raw=parsed.text,
+            raw_ref=str(path),
+            occurred_at=occurred_at,
+            external_id=f"file:{digest}",
+        )
+    except StoreError as exc:
+        raise ConfigError(
+            f"{path.name} is already in the store (same content).",
+            hint="Edit the file or remove the earlier episode to re-ingest it.",
+        ) from exc
+    units = extract_from_raw(
+        store,
+        episode,
+        config,
+        on_progress=on_progress,
+        postprocess_drafts=lambda drafts: stamp_locators(drafts, parsed),
+    )
+    return episode, units
+
+
 def default_meeting_title(when: datetime) -> str:
     """The auto-generated title when a capture/record starts without one.
     Rendered in the user's local wall-clock time — the sidecar and CLI run on

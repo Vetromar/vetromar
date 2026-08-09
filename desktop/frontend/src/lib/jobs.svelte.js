@@ -146,6 +146,8 @@ export const captureJob = createJobTracker();
 export const workspaceJob = createJobTracker();
 // The ~8 GB local-model download must survive tab switches like any sync.
 export const downloadJob = createJobTracker();
+// Document upload + extraction (Knowledge tab) — big PDFs extract in chunks.
+export const documentJob = createJobTracker();
 
 // Discover server-initiated sync jobs (background auto-sync + background
 // workspace sync) so they render exactly like manual ones. Started once from

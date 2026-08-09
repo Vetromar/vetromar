@@ -53,6 +53,13 @@ export const api = {
     if (when) fd.append("when", when);
     return request("/api/capture", { method: "POST", body: fd });
   },
+  uploadDocument(file, title, when) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("title", title || "");
+    if (when) fd.append("when", when);
+    return request("/api/documents", { method: "POST", body: fd });
+  },
   recordStart: (title, when) => jsonPost("/api/record/start", { title, when: when || null }),
   recordStop: (job_id) => jsonPost("/api/record/stop", { job_id }),
   job: (id) => request("/api/jobs/" + id),

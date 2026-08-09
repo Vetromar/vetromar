@@ -4,7 +4,7 @@
   // drills into UnitDetail; edges navigate onward in-view. The lone
   // mutation is renaming an episode's title — units stay read-only.
   import { api } from "../api.js";
-  import { captureJob, sourcesJob, workspaceJob } from "./jobs.svelte.js";
+  import { captureJob, documentJob, sourcesJob, workspaceJob } from "./jobs.svelte.js";
   import Graph from "./Graph.svelte";
   import UnitDetail from "./UnitDetail.svelte";
 
@@ -165,6 +165,58 @@
     if (m === "episodes" && !episodes) loadEpisodes();
   }
 
+  // -- document upload (drag-drop or picker; PDF/DOCX/MD/TXT) ---------------
+  const DOC_EXTENSIONS = [".pdf", ".docx", ".md", ".txt"];
+  let fileInput = $state(null);
+  let dragOver = $state(false);
+
+  function isDocFile(file) {
+    const name = (file?.name || "").toLowerCase();
+    return DOC_EXTENSIONS.some((ext) => name.endsWith(ext));
+  }
+
+  async function ingestDocument(file) {
+    if (!file) return;
+    if (!isDocFile(file)) {
+      error = `Unsupported file type — supported: ${DOC_EXTENSIONS.join(", ")}`;
+      return;
+    }
+    error = null;
+    await documentJob.start(`Ingesting ${file.name}`, "document", () =>
+      api.uploadDocument(file)
+    );
+    // New episode + units landed (or failed visibly) — refresh what we show.
+    episodes = null;
+    if (mode === "episodes") loadEpisodes();
+    if (mode === "graph") refreshGraphQuietly();
+  }
+
+  function pickDocument(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    ingestDocument(file);
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    dragOver = false;
+    ingestDocument(e.dataTransfer?.files?.[0]);
+  }
+
+  function onDragOver(e) {
+    // Only light up for file drags, and only while nothing is ingesting.
+    if (!documentJob.running && e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      dragOver = true;
+    }
+  }
+
+  const documentStage = $derived(
+    documentJob.job?.progress?.length
+      ? documentJob.job.progress[documentJob.job.progress.length - 1]
+      : "starting…"
+  );
+
   // Initial load so the screen is never blank.
   $effect(() => {
     if (mode === "graph" && graphData === null) loadGraph();
@@ -177,7 +229,7 @@
   // nodes drift into the field as they land. Silent by design: no spinner, and
   // a failed poll never surfaces — the next one retries.
   const ingesting = $derived(
-    sourcesJob.running || workspaceJob.running || captureJob.running
+    sourcesJob.running || workspaceJob.running || captureJob.running || documentJob.running
   );
 
   async function refreshGraphQuietly() {
@@ -203,14 +255,64 @@
 {#if selected}
   <UnitDetail payload={selected} onBack={() => (selected = null)} onNavigate={navigate} />
 {:else}
-  <div class="card stack">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="card stack"
+    class:dropping={dragOver}
+    ondragover={onDragOver}
+    ondragleave={() => (dragOver = false)}
+    ondrop={onDrop}
+  >
     <div class="row" style="gap:8px">
       <button class:primary={mode === "graph"} onclick={() => setMode("graph")}>Graph</button>
       <button class:primary={mode === "search"} onclick={() => setMode("search")}>Search</button>
       <button class:primary={mode === "current"} onclick={() => setMode("current")}>Current state</button>
       <button class:primary={mode === "episodes"} onclick={() => setMode("episodes")}>Episodes</button>
       {#if busy}<span class="spinner"></span>{/if}
+      <span style="flex:1"></span>
+      <input
+        type="file"
+        accept={DOC_EXTENSIONS.join(",")}
+        style="display:none"
+        bind:this={fileInput}
+        onchange={pickDocument}
+      />
+      <button
+        onclick={() => fileInput?.click()}
+        disabled={documentJob.running}
+        title="Ingest a PDF, DOCX, Markdown, or text file — or drag one anywhere onto this panel"
+      >
+        + Add document
+      </button>
     </div>
+
+    {#if dragOver}
+      <div class="dropzone">Drop to ingest ({DOC_EXTENSIONS.join(" · ")})</div>
+    {/if}
+
+    {#if documentJob.running}
+      <div class="row" style="gap:8px">
+        <span class="spinner"></span>
+        <span class="muted">{documentJob.label} — {documentStage}</span>
+      </div>
+    {:else if documentJob.err}
+      <div class="row spread">
+        <p class="error" style="margin:0">{documentJob.err}</p>
+        <button onclick={() => documentJob.clear()}>Dismiss</button>
+      </div>
+    {:else if documentJob.result?.kind === "document"}
+      <div class="row spread">
+        <span class="muted">
+          Ingested “{documentJob.result.title}” — {documentJob.result.units} unit{documentJob.result.units === 1 ? "" : "s"} extracted.
+        </span>
+        <div class="row" style="gap:8px">
+          <button onclick={() => (openEpisode(documentJob.result.episode_id), (mode = "episodes"), documentJob.clear())}>
+            View episode
+          </button>
+          <button onclick={() => documentJob.clear()}>Dismiss</button>
+        </div>
+      </div>
+    {/if}
 
     {#if error}
       <p class="error">{error}</p>
@@ -392,3 +494,18 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  .card.dropping {
+    outline: 2px dashed var(--accent, #7c6cf0);
+    outline-offset: -6px;
+  }
+  .dropzone {
+    border: 1px dashed var(--accent, #7c6cf0);
+    border-radius: 8px;
+    padding: 10px 14px;
+    text-align: center;
+    font-size: 13px;
+    opacity: 0.85;
+  }
+</style>
