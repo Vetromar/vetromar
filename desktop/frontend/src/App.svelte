@@ -186,12 +186,13 @@
   {:else if view === "login"}
     <Login serverUrl={workspace?.server_url} onSignedIn={onSignedIn} />
   {:else if view === "setup"}
-    <!-- Only a true first-run (not ready yet) pins the user here. -->
+    <!-- Never pin: extraction setup is not a gate on the rest of the app —
+         Knowledge browsing and the Workspace tab work without AI. -->
     <Setup
       {health}
       onDone={onSetupDone}
       onChanged={() => refresh()}
-      onBack={health?.ready ? () => (view = "capture") : null}
+      onBack={() => (view = "capture")}
       onReplayTour={health?.ready
         ? () => {
             view = "capture";
