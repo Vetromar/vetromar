@@ -7,14 +7,15 @@
 #   ./release.sh --bump patch ["release notes"]   # 0.1.1 → 0.1.2
 #
 # The script never commits: after a successful publish, commit the version
-# bump as `release: vX.Y.Z` on a branch and PR it to master.
+# bump as `release: vX.Y.Z` on a branch and PR it to main.
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 
 # The ONE authoritative home of the releases-repo slug. It unavoidably also
-# appears in tauri.conf.json (updater endpoint) and website/index.html (the
-# download button) — preflight greps below fail the release on any drift.
+# appears in tauri.conf.json (updater endpoint) and the live site's download
+# button (index.html in the Vetromar/site repo) — preflight checks below fail
+# the release on any drift.
 RELEASES_REPO="Vetromar/releases"
 KEY_PATH="${VETROMAR_UPDATER_KEY:-$HOME/.tauri/vetromar-updater.key}"
 
@@ -87,17 +88,24 @@ fi
 if [[ "$RELEASES_REPO" == *"VETROMAR-ORG"* ]]; then
   echo "ERROR: RELEASES_REPO is still the placeholder — create the GitHub org +" >&2
   echo "       public releases repo, then update the constant at the top of this" >&2
-  echo "       script (and the endpoint in $CONF + the website download link)." >&2
+  echo "       script (and the endpoint in $CONF + the download link in the" >&2
+  echo "       Vetromar/site repo)." >&2
   exit 1
 fi
 
-for f in "$CONF" "$ROOT/website/index.html"; do
-  if ! grep -q "$RELEASES_REPO" "$f"; then
-    echo "ERROR: $f does not reference $RELEASES_REPO — the updater endpoint /" >&2
-    echo "       download link has drifted from RELEASES_REPO. Fix before releasing." >&2
-    exit 1
-  fi
-done
+if ! grep -q "$RELEASES_REPO" "$CONF"; then
+  echo "ERROR: $CONF does not reference $RELEASES_REPO — the updater endpoint" >&2
+  echo "       has drifted from RELEASES_REPO. Fix before releasing." >&2
+  exit 1
+fi
+
+# The download button lives in the Vetromar/site repo now — check the live
+# site instead of a local file.
+if ! curl -fsS https://vetromar.com/ | grep -q "$RELEASES_REPO"; then
+  echo "ERROR: the live vetromar.com download link does not reference" >&2
+  echo "       $RELEASES_REPO — fix index.html in Vetromar/site before releasing." >&2
+  exit 1
+fi
 
 gh auth status >/dev/null 2>&1 || {
   echo "ERROR: gh is not authenticated. Either 'gh auth login', or export GH_TOKEN" >&2

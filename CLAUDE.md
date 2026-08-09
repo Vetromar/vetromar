@@ -26,7 +26,9 @@ summarized here for quick reference.
   Full build: `desktop/build.sh`. Frontend-only changes can rebuild
   shell-only, but ANY Python delta needs the full build (a stale sidecar
   404s new routes).
-- `website/` — static project site (Vercel). `docs/` — self-hosting guide.
+- `docs/` — self-hosting guide. The vetromar.com site lives in the separate
+  private repo `Vetromar/site` (Vercel deploys its `main`); release assets in
+  `Vetromar/releases` (which also runs the daily download-stats snapshot).
 
 ## Build & test
 
