@@ -1,0 +1,45 @@
+# Self-hosted Vetromar workspace server (accounts + invites + multi-device
+# sync) with Postgres. `docker compose up -d`, then point the desktop app's
+# sign-in screen at http://localhost:8787 (or your reverse-proxied domain).
+#
+# Single-container SQLite variant (no Postgres): drop the `db` service and
+# set CLOUD_DATABASE_URL=sqlite:////data/cloud.db with a volume on /data.
+# See docs/self-hosting.md for the full guide (TLS, email, backups).
+
+services:
+  vetromar-server:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      CLOUD_DATABASE_URL: postgresql://vetromar:vetromar@db:5432/vetromar
+      # The URL users reach this server at — used in emailed invite/reset
+      # links. Set to your public https:// domain in production.
+      CLOUD_PUBLIC_URL: http://localhost:8787
+      # Optional: real invite/reset emails via Resend (logged-only if unset).
+      # RESEND_API_KEY: re_...
+      # EMAIL_FROM: "Vetromar <no-reply@your-domain.com>"
+      # Optional: notify this address on signups/deletions.
+      # CLOUD_SIGNUP_NOTIFY_EMAIL: you@your-domain.com
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vetromar
+      POSTGRES_PASSWORD: vetromar
+      POSTGRES_DB: vetromar
+    volumes:
+      - vetromar-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vetromar"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  vetromar-db:

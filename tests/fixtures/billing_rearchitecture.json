@@ -1,0 +1,24 @@
+{
+  "segments": [
+    {"speaker": "SPEAKER_00", "text": "Okay, billing. We can't keep patching the monolith, the invoice runs are timing out again.", "start_ms": 0, "end_ms": 6200},
+    {"speaker": "SPEAKER_01", "text": "Timing out how badly?", "start_ms": 6200, "end_ms": 7400},
+    {"speaker": "SPEAKER_00", "text": "Forty minutes for the EU batch last night. It shares a connection pool with checkout, so when billing spikes, checkout latency spikes with it.", "start_ms": 7400, "end_ms": 15800},
+    {"speaker": "SPEAKER_02", "text": "So we finally split it out. I've been saying this for two quarters.", "start_ms": 15800, "end_ms": 19100},
+    {"speaker": "SPEAKER_03", "text": "Hang on, splitting billing off is a six week project minimum, and we're mid migration on the data layer already. Two migrations at once is how you get a broken quarter.", "start_ms": 19100, "end_ms": 28600},
+    {"speaker": "SPEAKER_02", "text": "It's not six weeks if we only move invoicing first and leave subscriptions where they are.", "start_ms": 28600, "end_ms": 33500},
+    {"speaker": "SPEAKER_04", "text": "Wait, sorry, before that, did anyone look at just giving billing its own connection pool? That's a two day change.", "start_ms": 33500, "end_ms": 39900},
+    {"speaker": "SPEAKER_00", "text": "We tried the pool split in March. It bought us a month. The real problem is billing table locks blocking checkout writes, a pool doesn't fix that.", "start_ms": 39900, "end_ms": 48300},
+    {"speaker": "SPEAKER_01", "text": "What about read replicas for the invoice runs?", "start_ms": 48300, "end_ms": 51000},
+    {"speaker": "SPEAKER_00", "text": "Replicas don't help either, the runs write invoice state back. It's write contention, not read load.", "start_ms": 51000, "end_ms": 57200},
+    {"speaker": "SPEAKER_03", "text": "Fine, but I still think sequencing matters. If we do this now the data layer migration slips.", "start_ms": 57200, "end_ms": 62800},
+    {"speaker": "SPEAKER_02", "text": "So we move billing off the monolith, invoicing first, and we start after the data layer migration freezes in two weeks. Best of both.", "start_ms": 62800, "end_ms": 70400},
+    {"speaker": "SPEAKER_00", "text": "Yes. Decision: billing comes off the monolith, invoicing service first, kickoff after the data layer freeze. Sam, you own the scoping doc.", "start_ms": 70400, "end_ms": 79000},
+    {"speaker": "SPEAKER_03", "text": "Okay, I can live with that sequencing. I still want a rollback plan written down before kickoff.", "start_ms": 79000, "end_ms": 84100},
+    {"speaker": "SPEAKER_04", "text": "Should we also talk about which team owns the new service long term? Because platform is already stretched and, uh...", "start_ms": 84100, "end_ms": 90500},
+    {"speaker": "SPEAKER_00", "text": "Let's park ownership, we can't settle that without Dana in the room. Next week.", "start_ms": 90500, "end_ms": 94800},
+    {"speaker": "SPEAKER_01", "text": "One more thing, the vendor question. Do we keep Stripe for the new invoicing service or is this the moment to look at usage based billing vendors?", "start_ms": 94800, "end_ms": 102600},
+    {"speaker": "SPEAKER_02", "text": "I looked at Metronome and Orb last month. Honestly the migration cost is brutal, we'd be rewriting every price point.", "start_ms": 102600, "end_ms": 109900},
+    {"speaker": "SPEAKER_01", "text": "I'm leaning keep Stripe for now then, revisit when usage pricing actually ships.", "start_ms": 109900, "end_ms": 114700},
+    {"speaker": "SPEAKER_00", "text": "Leaning agreed, keep Stripe, not final until pricing team weighs in.", "start_ms": 114700, "end_ms": 119200}
+  ]
+}

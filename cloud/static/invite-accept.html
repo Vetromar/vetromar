@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join your team — Vetromar</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center;
+      justify-content: center; font: 16px/1.5 -apple-system, BlinkMacSystemFont,
+      "Segoe UI", sans-serif; background: light-dark(#f5f4fa, #14121c);
+      color: light-dark(#1c1a26, #e8e6f2); padding: 24px;
+    }
+    .card {
+      width: 100%; max-width: 420px; padding: 32px;
+      background: light-dark(#ffffff, #1e1b2a); border-radius: 14px;
+      border: 1px solid light-dark(#e2e0ec, #2e2a3e);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.4rem; }
+    .sub { margin: 0 0 20px; color: light-dark(#5c5870, #a09cb4); font-size: 0.95rem; }
+    label { display: block; font-size: 0.85rem; margin: 14px 0 4px;
+            color: light-dark(#5c5870, #a09cb4); }
+    input {
+      width: 100%; padding: 10px 12px; border-radius: 8px; font: inherit;
+      border: 1px solid light-dark(#d4d1e0, #3a3550);
+      background: light-dark(#fbfaff, #171420); color: inherit;
+    }
+    button {
+      margin-top: 20px; width: 100%; padding: 11px; border: none;
+      border-radius: 8px; background: #7c5cff; color: #fff; font: inherit;
+      font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .form-error { color: #e5484d; font-size: 0.9rem; min-height: 1.2em; margin: 10px 0 0; }
+    .success { display: none; }
+    .highlight { color: #7c5cff; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="card" id="form-card">
+    <h1>Join your team</h1>
+    <p class="sub">
+      You've been invited to a Vetromar workspace. Create your account to
+      join — you'll sign into the app with these credentials.
+    </p>
+    <form id="accept-form">
+      <label for="name">Your name</label>
+      <input id="name" name="name" required autocomplete="name" />
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required autocomplete="email" />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" minlength="8" required
+             autocomplete="new-password" placeholder="at least 8 characters" />
+      <button class="submit" type="submit">Join workspace</button>
+      <p class="form-error" role="alert"></p>
+    </form>
+  </div>
+
+  <div class="card success" id="success-card">
+    <h1>You're in 🎉</h1>
+    <p>Your account is part of <span class="highlight" id="ws-name"></span>.</p>
+    <p>
+      Next: open the Vetromar desktop app, point it at this server, and sign
+      in with the email and password you just chose — your team's shared
+      knowledge syncs to your machine automatically.
+    </p>
+  </div>
+
+  <script>
+    const token = new URLSearchParams(location.search).get("token");
+    const form = document.getElementById("accept-form");
+    if (!token) {
+      form.querySelector(".form-error").textContent =
+        "This invite link is missing its token — ask your admin for a fresh link.";
+      form.querySelector(".submit").disabled = true;
+    }
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = form.querySelector(".form-error");
+      const button = form.querySelector(".submit");
+      errorEl.textContent = "";
+      button.disabled = true;
+      const values = Object.fromEntries(new FormData(form).entries());
+      try {
+        const res = await fetch("/v1/invites/accept", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...values, token }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const detail = data && data.detail;
+          throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
+        }
+        document.getElementById("ws-name").textContent = data.workspace;
+        document.getElementById("form-card").style.display = "none";
+        document.getElementById("success-card").style.display = "block";
+      } catch (err) {
+        errorEl.textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

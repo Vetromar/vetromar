@@ -1,0 +1,19 @@
+# Everything the cloud-service image doesn't need. The Dockerfile only
+# COPYs cloud/ and vetromar/, but a small context keeps builds fast.
+.git
+.venv
+.claude
+desktop
+website
+tests
+docs
+dist
+build
+*.dmg
+*.app
+*.wav
+*.mp3
+*.svg
+__pycache__
+*.pyc
+.pytest_cache

@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.DS_Store
+
+# Desktop app build artifacts
+desktop/frontend/node_modules/
+desktop/frontend/dist/
+desktop/node_modules/
+desktop/build/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+# Bundled PyInstaller sidecar (multi-GB; produced by build.sh)
+desktop/src-tauri/sidecar/vetromar-sidecar/
+desktop/release-staging/

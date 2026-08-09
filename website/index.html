@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vetromar</title>
+  <meta name="description" content="Vetromar — your company's context, available to AI." />
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+  <link rel="stylesheet" href="css/site.css" />
+</head>
+<body>
+  <svg id="scene" class="scene" role="img" aria-label="Interactive 3D knowledge graph"></svg>
+
+  <header class="hero">
+    <div class="brand">
+      <svg class="logo" viewBox="-37.8 -97.5 69.1 71.1" aria-hidden="true">
+        <path d="M -24.6,-43.0 C -37.5,-48.0 -38.3,-59.3 -26.4,-68.2 L 2.4,-89.8 C 14.3,-98.7 24.8,-94.7 25.8,-80.8 L 28.2,-47.2 C 29.2,-33.3 19.5,-26.1 6.6,-31.0 L -24.6,-43.0 Z" fill="#B3A5C8"/>
+        <path d="M -16.6,-48.1 C -25.6,-51.6 -26.2,-59.5 -17.9,-65.7 L 2.3,-80.9 C 10.6,-87.1 18.0,-84.3 18.7,-74.6 L 20.3,-51.0 C 21.0,-41.3 14.2,-36.2 5.2,-39.7 L -16.6,-48.1 Z" fill="#8471A3"/>
+        <path d="M -9.2,-52.9 C -14.6,-54.9 -14.9,-59.7 -9.9,-63.4 L 2.2,-72.5 C 7.2,-76.3 11.6,-74.6 12.0,-68.7 L 13.0,-54.6 C 13.4,-48.8 9.3,-45.7 3.9,-47.8 L -9.2,-52.9 Z" fill="#503B70"/>
+      </svg>
+      Vetromar
+    </div>
+    <h1>Your company converted into context.</h1>
+    <p>
+      Vetromar fuses what's said in the room with every digital source —
+      one living, evidence-backed graph your AI can query.
+    </p>
+    <div class="cta-row">
+      <a class="cta" href="https://github.com/Vetromar/releases/releases/latest/download/Vetromar.dmg">Download for Mac (Apple&nbsp;Silicon) →</a>
+      <a class="cta cta-secondary" href="https://github.com/Vetromar/vetromar">Source on GitHub</a>
+    </div>
+    <p class="install-note">
+      Free &amp; open source (AGPL-3.0). Bring your own AI provider,
+      <a href="https://github.com/Vetromar/vetromar/blob/main/docs/self-hosting.md">self-host</a>
+      the workspace server.
+    </p>
+  </header>
+
+  <div class="hint">drag to orbit &middot; scroll or pinch to zoom &middot; shift+drag to pan</div>
+
+  <footer class="footer-links">
+    <a href="https://github.com/Vetromar/vetromar">GitHub</a> &middot;
+    <a href="terms.html">Terms</a> &middot;
+    <a href="privacy.html">Privacy</a> &middot;
+    <span>&copy; 2026 Vetromar</span>
+  </footer>
+
+  <div class="contact-card" id="contact-card" role="dialog" aria-modal="false" aria-label="Get in contact" hidden>
+    <button class="card-close" id="card-close" aria-label="Close">&times;</button>
+    <h2>Get in contact</h2>
+    <a class="mail" id="contact-mail" href="mailto:leo@vetromar.com">leo@vetromar.com</a>
+    <button id="copy-email">Copy address</button>
+  </div>
+
+  <svg id="gizmo" class="gizmo" viewBox="0 0 92 92" role="button" tabindex="-1" aria-label="View orientation gizmo"></svg>
+
+  <script src="vendor/d3-force.bundle.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+[project]
+name = "vetromar"
+version = "0.1.7"
+description = "Local-first knowledge engine: evidence-gated decision graph from meetings and sources, queryable over MCP"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "anthropic>=0.40",
+    # BYO providers: any OpenAI-compatible endpoint (OpenAI, OpenRouter,
+    # Groq, Ollama /v1, LM Studio, vLLM, LiteLLM proxies) via one SDK.
+    "openai>=1.40",
+    "ollama>=0.4",
+    "mcp>=1.0",
+    # Workspace sync client (vetromar/workspace) talks to the cloud service.
+    "httpx>=0.27",
+    # Retrieval: local ONNX embeddings + SQL cosine search. Core, not an
+    # extra — "queryable by the customer's agent" is the product.
+    "fastembed>=0.5",
+    "sqlite-vec>=0.1.6",
+]
+
+[project.optional-dependencies]
+# Heavy audio/ML pipeline deps — only needed to run capture (stages 1-3).
+# Everything downstream (schema, store, extraction backends, render, MCP) works without them.
+capture = [
+    "whisperx>=3.8.6",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "numpy",
+]
+# Local HTTP API behind the desktop UI (stays local; light next to torch).
+ui = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+# The workspace cloud service (accounts + sync log). Server-side only — the
+# desktop sidecar never imports `cloud`, so none of this enters the bundle.
+cloud = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "sqlalchemy>=2.0",
+    "argon2-cffi>=23",
+    "psycopg[binary]>=3.1",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+vetromar = "vetromar.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vetromar", "cloud"]

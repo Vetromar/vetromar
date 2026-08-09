@@ -1,0 +1,9 @@
+{
+  "segments": [
+    {"speaker": "SPEAKER_00", "text": "Quick one on the feature flag cleanup. Last week we said we'd delete all flags older than ninety days.", "start_ms": 0, "end_ms": 6800},
+    {"speaker": "SPEAKER_01", "text": "Yeah, about that. Compliance flagged that three of those gate the EU data residency path. We can't delete those.", "start_ms": 6800, "end_ms": 14200},
+    {"speaker": "SPEAKER_00", "text": "Ugh. Okay, reversing last week's call then, we keep the residency flags and delete the rest.", "start_ms": 14200, "end_ms": 20100},
+    {"speaker": "SPEAKER_02", "text": "Can we at least rename them so nobody trips over them again?", "start_ms": 20100, "end_ms": 23400},
+    {"speaker": "SPEAKER_00", "text": "Sure, rename with a compliance prefix. Done, moving on.", "start_ms": 23400, "end_ms": 27000}
+  ]
+}

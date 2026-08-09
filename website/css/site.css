@@ -1,0 +1,370 @@
+/* Vetromar launch site — theme + graph styles echo the desktop app
+   (desktop/frontend/src/app.css). */
+
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --border: #2a2f3a;
+  --text: #e7e9ee;
+  --muted: #9aa3b2;
+  --accent: #a18fc0;
+  --accent-strong: #8471a3;
+  --good: #4ade80;
+  --bad: #f87171;
+  --warn: #fbbf24;
+  --radius: 12px;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --border: #e2e5ea;
+    --text: #171a21;
+    --muted: #5b6472;
+    --shadow: 0 8px 30px rgba(15, 17, 21, 0.08);
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+    Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* -- full-viewport scene ------------------------------------------------- */
+
+svg.scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: var(--bg);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+svg.scene:active {
+  cursor: grabbing;
+}
+
+.glink {
+  stroke: var(--muted);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* decorative nodes are click-through — only the contact node is interactive */
+.gnode {
+  pointer-events: none;
+}
+.gnode text {
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+/* -- the one clickable node ---------------------------------------------- */
+
+.gnode.contact {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.contact-core {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+  stroke-width: 1.6;
+}
+.contact-halo {
+  fill: var(--accent);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: contact-pulse 2.4s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes contact-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+}
+.gnode.contact text {
+  fill: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.contact-hit {
+  fill: transparent;
+  stroke: none;
+}
+
+/* -- axis gizmo ----------------------------------------------------------- */
+
+.gizmo {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 92px;
+  height: 92px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.gizmo:active {
+  cursor: grabbing;
+}
+.gizmo:focus,
+.gizmo :focus {
+  outline: none;
+}
+.gizmo-bg {
+  fill: var(--panel);
+  opacity: 0.55;
+  stroke: var(--border);
+}
+.gizmo-label {
+  fill: #0f1115;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-anchor: middle;
+  pointer-events: none;
+}
+@media (max-width: 480px) {
+  .gizmo {
+    display: none;
+  }
+}
+
+/* -- overlays ------------------------------------------------------------- */
+
+.hero {
+  position: fixed;
+  top: 0;
+  left: 0;
+  padding: clamp(24px, 5vw, 56px);
+  max-width: 620px;
+  pointer-events: none;
+  z-index: 2;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 650;
+  font-size: 17px;
+  margin-bottom: 18px;
+}
+.brand .logo {
+  height: 22px;
+  width: auto;
+  filter: drop-shadow(0 0 10px rgba(132, 113, 163, 0.55));
+}
+.hero h1 {
+  font-size: clamp(26px, 4.6vw, 42px);
+  line-height: 1.15;
+  text-shadow: 0 2px 24px var(--bg);
+}
+.hero p {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: clamp(14.5px, 1.6vw, 16.5px);
+  max-width: 46ch;
+  text-shadow: 0 1px 16px var(--bg);
+}
+
+.hint {
+  position: fixed;
+  bottom: 14px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  opacity: 0.8;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* -- contact card ---------------------------------------------------------- */
+
+.contact-card {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(96px, 14vh);
+  width: min(92vw, 380px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px 24px;
+  z-index: 3;
+}
+.contact-card[hidden] {
+  display: none;
+}
+.contact-card h2 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+.contact-card .mail {
+  display: block;
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  word-break: break-all;
+  margin-bottom: 16px;
+}
+.contact-card .mail:hover {
+  text-decoration: underline;
+}
+.card-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+}
+.card-close:hover {
+  color: var(--text);
+}
+.hero .cta {
+  display: inline-block;
+  margin-top: 14px;
+  background: var(--accent-strong);
+  color: #fff;
+  text-decoration: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: auto;
+}
+.hero .cta:hover {
+  background: var(--accent);
+}
+.hero .cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.hero .cta-secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--accent-strong);
+}
+.hero .cta-secondary:hover {
+  background: color-mix(in srgb, var(--accent-strong) 15%, transparent);
+}
+.hero .install-note {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.65;
+}
+.hero .install-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  user-select: all;
+}
+.hero .install-note a {
+  color: var(--accent);
+  pointer-events: auto;
+}
+
+/* -- legal footer ---------------------------------------------------------- */
+
+.footer-links {
+  position: fixed;
+  bottom: 14px;
+  left: 16px;
+  color: var(--muted);
+  font-size: 12.5px;
+  opacity: 0.8;
+  z-index: 2;
+  pointer-events: auto;
+}
+.footer-links a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.footer-links a:hover {
+  color: var(--accent);
+}
+@media (max-width: 640px) {
+  .footer-links {
+    left: 0;
+    right: 0;
+    bottom: 34px;
+    text-align: center;
+  }
+}
+
+#copy-email {
+  background: var(--accent-strong);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#copy-email:hover {
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .contact-halo {
+    animation: none;
+    opacity: 0;
+  }
+}

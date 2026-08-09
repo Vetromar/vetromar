@@ -1,0 +1,12 @@
+# Deploy manifest for the cloud service container (see Dockerfile).
+# Mirrors the pyproject [cloud] extra plus the two things the slim image
+# needs that the extra gets transitively in a dev install: pydantic (for
+# vetromar/workspace/wire.py, cloud's ONE import from vetromar) and the
+# psycopg3 driver for managed Postgres.
+fastapi>=0.110
+uvicorn>=0.29
+sqlalchemy>=2.0
+argon2-cffi>=23
+pydantic>=2.7
+psycopg[binary]>=3.1
+httpx>=0.27
