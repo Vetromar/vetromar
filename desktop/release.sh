@@ -101,7 +101,7 @@ fi
 
 # The download button lives in the Vetromar/site repo now — check the live
 # site instead of a local file.
-if ! curl -fsS https://vetromar.com/ | grep -q "$RELEASES_REPO"; then
+if ! curl -fsSL https://vetromar.com/ | grep -q "$RELEASES_REPO"; then
   echo "ERROR: the live vetromar.com download link does not reference" >&2
   echo "       $RELEASES_REPO — fix index.html in Vetromar/site before releasing." >&2
   exit 1
