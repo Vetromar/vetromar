@@ -8,6 +8,7 @@ Operator subcommands run on the server box against the same database:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import uvicorn
@@ -16,12 +17,21 @@ from .app import create_app
 from .db import database_url, ensure_columns, make_engine, make_sessionmaker
 
 
+def public_url() -> str:
+    """Public base URL of THIS server — used in minted reset links, which
+    point at the server's own /reset-password page. (CLOUD_WEBSITE_URL is
+    honored as a legacy fallback name.)"""
+    url = os.environ.get("CLOUD_PUBLIC_URL") or os.environ.get(
+        "CLOUD_WEBSITE_URL", "http://localhost:8787"
+    )
+    return url.rstrip("/")
+
+
 def _cmd_reset_link(email: str) -> int:
     from datetime import timedelta
 
     from sqlalchemy import select
 
-    from .emailer import public_url
     from .models import RESET_TOKEN_MINUTES, Base, ResetToken, User, new_id, utcnow
     from .security import generate_token, hash_token
 

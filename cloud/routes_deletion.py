@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .deps import AuthContext, current_auth, get_session, require_admin
-from .emailer import send_safely, signup_notify_email
 from .models import (
     Change,
     Device,
@@ -73,16 +72,9 @@ def _delete_workspace_rows(session: Session, ws: Workspace) -> None:
     session.delete(ws)
 
 
-def _notify_operator(request: Request, subject: str, html: str) -> None:
-    operator = signup_notify_email()
-    if operator:
-        send_safely(request.app.state.emailer, operator, subject, html)
-
-
 @router.delete("/v1/workspaces")
 def delete_workspace(
     body: ConfirmPassword,
-    request: Request,
     auth: AuthContext = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -91,19 +83,12 @@ def delete_workspace(
     ws_name, ws_id = ws.name, ws.id
     _delete_workspace_rows(session, ws)
     logger.info("workspace %s (%s) deleted by %s", ws_id, ws_name, auth.user.email)
-    _notify_operator(
-        request,
-        f"Vetromar workspace deleted: {ws_name}",
-        f"<p>Workspace <strong>{ws_name}</strong> ({ws_id}) was deleted by "
-        f"{auth.user.email}.</p>",
-    )
     return {"deleted": True}
 
 
 @router.delete("/v1/me")
 def delete_account(
     body: ConfirmPassword,
-    request: Request,
     auth: AuthContext = Depends(current_auth),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -150,15 +135,7 @@ def delete_account(
                 )
 
     for ws_id in solo_workspace_ids:
-        ws = session.get(Workspace, ws_id)
-        ws_name = ws.name
-        _delete_workspace_rows(session, ws)
-        _notify_operator(
-            request,
-            f"Vetromar workspace deleted: {ws_name}",
-            f"<p>Workspace <strong>{ws_name}</strong> ({ws_id}) was deleted "
-            f"with {email}'s account.</p>",
-        )
+        _delete_workspace_rows(session, session.get(Workspace, ws_id))
 
     # Leave every surviving workspace, then erase the user.
     session.execute(delete(Membership).where(Membership.user_id == uid))

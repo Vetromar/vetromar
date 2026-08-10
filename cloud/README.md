@@ -16,11 +16,18 @@ Environment:
 - `CLOUD_DATABASE_URL` — SQLAlchemy URL. Default `sqlite:///~/.vetromar/cloud-dev.db`.
   The schema is Postgres-portable; swap the URL at deploy time.
 - `CLOUD_CORS_ORIGINS` — comma-separated allowed origins. Default `*` (dev).
-- `CLOUD_WEBSITE_URL` — base URL used in invite/reset links.
-- `RESEND_API_KEY` / `EMAIL_FROM` — optional; enables real invite and
-  password-reset emails via Resend. Unset = emails are logged only.
-- `CLOUD_SIGNUP_NOTIFY_EMAIL` — optional; the server operator gets an email
-  on every new workspace signup and deletion.
+- `CLOUD_PUBLIC_URL` — the base URL users reach this server at; used in
+  password-reset links minted by `python -m cloud reset-link`. (Legacy name
+  `CLOUD_WEBSITE_URL` is honored.)
+
+The server never sends email — the email address is a login identifier only.
+Invites are copyable links generated in the desktop app; password resets are
+one-time links minted by a workspace admin in the app, or by the operator on
+the server box:
+
+```sh
+python -m cloud reset-link you@example.com
+```
 
 ## API sketch (`/v1`)
 
@@ -31,6 +38,8 @@ Environment:
 - `POST /invites/accept` — invite token + name/email/password → member account.
 - `GET /members`, `DELETE /members/{user_id}` (admin; revokes the removed
   user's tokens immediately; last-admin guarded).
+- `POST /members/{user_id}/reset-link` (admin) — mint a one-time
+  password-reset link; `POST /auth/reset-confirm` consumes it.
 - `PUT /devices/{device_id}` — idempotent device registration.
 - `POST /sync/push`, `GET /sync/pull?since=<seq>` — the replication log.
 - `DELETE /workspaces` (admin) / `DELETE /me` — password-confirmed deletion.

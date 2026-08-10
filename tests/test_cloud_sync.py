@@ -1,4 +1,4 @@
-"""Cloud service: the replication log (push/pull) + trial lock."""
+"""Cloud service: the replication log (push/pull)."""
 
 from __future__ import annotations
 

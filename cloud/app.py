@@ -16,19 +16,16 @@ from .models import Base
 _STATIC = Path(__file__).parent / "static"
 
 
-def create_app(engine: Engine | None = None, emailer=None) -> FastAPI:
+def create_app(engine: Engine | None = None) -> FastAPI:
     engine = engine or make_engine()
     # No alembic in v0: create_all makes missing tables; ensure_columns adds
     # any missing declared columns to existing ones (additive only).
     Base.metadata.create_all(engine)
     ensure_columns(engine)
 
-    from .emailer import make_emailer
-
     app = FastAPI(title="Vetromar Cloud", version="0.1.0")
     app.state.engine = engine
     app.state.sessionmaker = make_sessionmaker(engine)
-    app.state.emailer = emailer or make_emailer()
 
     origins = [
         o.strip()

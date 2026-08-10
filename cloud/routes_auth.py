@@ -13,10 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .deps import AuthContext, current_auth, get_session, me_payload, require_admin
-from .emailer import public_url, send_safely, signup_notify_email
 from .models import (
     INVITE_DAYS,
-    RESET_TOKEN_MINUTES,
     TOKEN_DAYS,
     Invite,
     Membership,
@@ -92,7 +90,6 @@ class Login(BaseModel):
 
 class CreateInvite(BaseModel):
     role: str = "member"
-    email: str | None = None  # optional: email the invite link directly
 
 
 class AcceptInvite(BaseModel):
@@ -129,24 +126,8 @@ def create_workspace(
     session.add(membership)
     raw = _issue_token(session, user)
     session.flush()
-    notify_to = signup_notify_email()
-    if notify_to:
-        send_safely(
-            request.app.state.emailer,
-            notify_to,
-            f"New Vetromar workspace: {workspace.name}",
-            _signup_notify_html(workspace, user),
-        )
     auth = AuthContext(user=user, workspace=workspace, membership=membership)
     return {"token": raw, **me_payload(auth)}
-
-
-def _signup_notify_html(workspace: Workspace, admin: User) -> str:
-    return (
-        f"<p>A new workspace was just created on this Vetromar server.</p>"
-        f"<p><strong>Workspace:</strong> {workspace.name}<br>"
-        f"<strong>Admin:</strong> {admin.name} ({admin.email})</p>"
-    )
 
 
 @router.post("/v1/auth/login")
@@ -179,7 +160,6 @@ def me(auth: AuthContext = Depends(current_auth)):
 @router.post("/v1/invites", status_code=201)
 def create_invite(
     body: CreateInvite,
-    request: Request,
     auth: AuthContext = Depends(require_admin),
     session: Session = Depends(get_session),
 ):
@@ -197,35 +177,14 @@ def create_invite(
             expires_at=expires,
         )
     )
-    # Raw token is returned exactly once; only its hash is stored.
-    resp = {
+    # Raw token is returned exactly once; only its hash is stored. The link
+    # is copyable from the app — the server never emails it.
+    return {
         "token": raw,
         "url_path": f"/invite-accept?token={raw}",
         "expires_at": expires.isoformat() + "Z",
         "workspace": auth.workspace.name,
     }
-    if body.email:
-        to = _normalize_email(body.email)
-        link = f"{public_url()}{resp['url_path']}"
-        sent = send_safely(
-            request.app.state.emailer,
-            to,
-            f"{auth.user.name} invited you to {auth.workspace.name} on Vetromar",
-            _invite_email_html(auth.user.name, auth.workspace.name, link),
-        )
-        if sent:
-            resp["emailed_to"] = to
-    return resp
-
-
-def _invite_email_html(inviter: str, workspace: str, link: str) -> str:
-    return (
-        f"<p>{inviter} invited you to join the <strong>{workspace}</strong> "
-        f"workspace on Vetromar.</p>"
-        f'<p><a href="{link}">Accept the invite</a> to create your account. '
-        f"The link works once and expires in {INVITE_DAYS} days.</p>"
-        f"<p>If you weren't expecting this, you can ignore this email.</p>"
-    )
 
 
 @router.post("/v1/invites/accept", status_code=201)
@@ -265,49 +224,9 @@ def accept_invite(
     return {"workspace": workspace.name, "email": email}
 
 
-class ResetRequest(BaseModel):
-    email: str
-
-
 class ResetConfirm(BaseModel):
     token: str
     password: str
-
-
-@router.post("/v1/auth/reset-request")
-def reset_request(
-    body: ResetRequest, request: Request, session: Session = Depends(get_session)
-):
-    """Always 200 — never reveals whether an account exists."""
-    _rate_limit(request)
-    try:
-        email = _normalize_email(body.email)
-    except HTTPException:
-        return {"ok": True}
-    user = session.scalar(select(User).where(User.email == email))
-    if user is not None and user.is_active:
-        raw = generate_token()
-        session.add(
-            ResetToken(
-                id=new_id("rst"),
-                user_id=user.id,
-                token_hash=hash_token(raw),
-                expires_at=utcnow() + timedelta(minutes=RESET_TOKEN_MINUTES),
-            )
-        )
-        link = f"{public_url()}/reset-password?token={raw}"
-        send_safely(
-            request.app.state.emailer,
-            email,
-            "Reset your Vetromar password",
-            f"<p>Someone (hopefully you) asked to reset the password for "
-            f"{email}.</p>"
-            f'<p><a href="{link}">Choose a new password</a> — the link works '
-            f"once and expires in {RESET_TOKEN_MINUTES} minutes.</p>"
-            f"<p>If this wasn't you, ignore this email; your password is "
-            f"unchanged.</p>",
-        )
-    return {"ok": True}
 
 
 @router.post("/v1/auth/reset-confirm")

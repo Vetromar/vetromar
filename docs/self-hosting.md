@@ -52,10 +52,10 @@ rewritten to the psycopg3 driver automatically). The server binds
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLOUD_DATABASE_URL` | `sqlite:///~/.vetromar/cloud-dev.db` | SQLAlchemy URL (SQLite or Postgres). |
-| `CLOUD_PUBLIC_URL` | `http://localhost:8787` | The URL users reach this server at — used in emailed invite/reset links (they point at the server's own `/invite-accept` and `/reset-password` pages). |
+| `CLOUD_PUBLIC_URL` | `http://localhost:8787` | The URL users reach this server at — used in password-reset links minted with `python -m cloud reset-link` (they point at the server's own `/reset-password` page). |
 | `CLOUD_CORS_ORIGINS` | `*` | Comma-separated allowed browser origins. |
-| `RESEND_API_KEY`, `EMAIL_FROM` | unset | Real transactional email via Resend. Unset = emails are logged only; invite links can always be copied from the app instead. |
-| `CLOUD_SIGNUP_NOTIFY_EMAIL` | unset | Operator address notified on workspace signups/deletions. |
+
+The server never sends email — the email address is just a login identifier.
 
 ## Account pages
 
@@ -64,6 +64,22 @@ The server serves its own account pages, same-origin with the API:
 - `/signup` — create a workspace (first user becomes admin)
 - `/invite-accept?token=…` — where invite links land
 - `/reset-password?token=…` — where password-reset links land
+
+## Invites and password resets (no email involved)
+
+Invites are copyable links: an admin generates one in the desktop app's
+Workspace tab and sends it over any channel (chat, however you like). It
+works once and expires after 14 days.
+
+Password resets work the same way — a workspace admin generates a one-time
+reset link from the member list in the Workspace tab. If you run the server
+and locked yourself out, mint one on the server box:
+
+```sh
+python -m cloud reset-link you@example.com
+```
+
+The link is single-use and expires in 60 minutes.
 
 ## Production notes
 
