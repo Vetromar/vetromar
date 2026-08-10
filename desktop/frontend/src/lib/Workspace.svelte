@@ -2,8 +2,9 @@
   import { onMount } from "svelte";
   import { api } from "../api.js";
   import { workspaceJob } from "./jobs.svelte.js";
+  import Login from "./Login.svelte";
 
-  let { onSignOut, onStatus = null } = $props();
+  let { onStatus = null } = $props();
 
   let status = $state(null);
   let members = $state([]);
@@ -136,9 +137,18 @@
     }
   }
 
+  function handleSignedIn(s) {
+    status = s;
+    onStatus?.(s);
+    loadMembers();
+    loadBinding();
+  }
+
   async function signOut() {
     await api.workspaceSignOut();
-    onSignOut?.();
+    members = [];
+    binding = null;
+    await loadStatus(); // renders the connect card; the app keeps working
   }
 
   const isAdmin = $derived(status?.role === "admin");
@@ -164,7 +174,10 @@
     try {
       if (dangerOpen === "workspace") await api.workspaceDelete(dangerPassword);
       else await api.accountDelete(dangerPassword);
-      onSignOut?.();
+      dangerOpen = null;
+      members = [];
+      binding = null;
+      await loadStatus();
     } catch (e) {
       dangerErr = e.message;
     } finally {
@@ -174,14 +187,25 @@
 </script>
 
 <div class="stack">
+  {#if status && !status.signed_in}
+    <div class="card stack">
+      <h2 class="display">Connect to a workspace</h2>
+      <p class="muted">
+        Vetromar works fully on this computer with no account. Connect to a
+        self-hosted workspace server to sync your knowledge with a team or
+        your other devices — entirely optional.
+      </p>
+      <Login serverUrl={status.server_url} onSignedIn={handleSignedIn} embedded />
+    </div>
+  {:else if status?.signed_in}
   {#if binding?.status === "needs_decision" && !bindingDismissed}
     <div class="card notice-banner">
       <h3>Your local knowledge isn't in this workspace yet</h3>
       <p class="muted">
         Everything in the Knowledge tab lives on this computer — it's always
         visible to you here, but it has <strong>not</strong> been uploaded:
-        this machine last synced with a different workspace (or one that no
-        longer exists). Upload it to make it part of
+        this machine was used on its own before connecting (or last synced
+        with a different workspace). Upload it to make it part of
         <strong>{status?.workspace || "this workspace"}</strong> (shared with
         its members and your other devices), or hold off and nothing leaves
         this machine.
@@ -332,6 +356,7 @@
       {#if dangerErr}<p class="error">{dangerErr}</p>{/if}
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>

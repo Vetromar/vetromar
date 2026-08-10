@@ -25,15 +25,19 @@ BOUND_KEY = "bound_workspace"
 
 def binding_status(store: Store, workspace_id: str) -> str:
     """'ok' when this store may sync with `workspace_id`; 'needs_decision'
-    when it last synced with a different workspace (or with one from before
-    binding existed) and a human must choose upload-vs-hold-off first."""
+    when local knowledge would land in a workspace a human never approved
+    (solo-era capture, or a store that last synced elsewhere) — they must
+    choose upload-vs-hold-off first."""
     bound = store.get_replication_state(BOUND_KEY)
     if bound == workspace_id:
         return "ok"
     if bound is None:
-        # Pre-binding store: pushed rows prove it synced *somewhere* once —
-        # that somewhere may be a deleted/recreated workspace, so ask.
-        return "needs_decision" if store.has_pushed_changes() else "ok"
+        # Unbound store: pushed rows prove it synced *somewhere* once, and
+        # local rows mean a solo graph would bulk-upload on first sync —
+        # either way, ask. Only a fresh empty store binds silently.
+        if store.has_pushed_changes() or store.has_local_rows():
+            return "needs_decision"
+        return "ok"
     return "needs_decision"
 
 
@@ -83,8 +87,9 @@ def sync_workspace(
     if workspace_id is not None:
         if binding_status(store, workspace_id) != "ok":
             raise WorkspaceBindingError(
-                "this machine's knowledge store last synced with a different "
-                "workspace — choose what to do in the Workspace tab before "
+                "this machine's knowledge store isn't part of this workspace "
+                "yet (it was used on its own, or synced with a different "
+                "workspace) — choose what to do in the Workspace tab before "
                 "syncing"
             )
         bind_workspace(store, workspace_id)

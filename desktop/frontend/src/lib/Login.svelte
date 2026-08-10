@@ -1,7 +1,9 @@
 <script>
   import { api } from "../api.js";
 
-  let { serverUrl = "", onSignedIn } = $props();
+  // embedded: rendered inside the Workspace tab's connect card (no page
+  // centering, no outer card chrome, shorter copy).
+  let { serverUrl = "", onSignedIn, embedded = false } = $props();
 
   let email = $state("");
   let password = $state("");
@@ -68,13 +70,15 @@
   let showReset = $state(false);
 </script>
 
-<div class="card stack login-card">
-  <h2 class="display">Sign in to your workspace</h2>
-  <p class="muted">
-    Vetromar syncs your team's knowledge across everyone's devices through a
-    workspace server your team runs. Sign in with your account, or the invite
-    your admin sent you.
-  </p>
+<div class="stack login-card" class:card={!embedded} class:embedded>
+  {#if !embedded}
+    <h2 class="display">Sign in to your workspace</h2>
+    <p class="muted">
+      Vetromar syncs your team's knowledge across everyone's devices through a
+      workspace server your team runs. Sign in with your account, or the invite
+      your admin sent you.
+    </p>
+  {/if}
   <p class="muted server-line">
     Server: <span class="server-url">{currentServer || "not set"}</span>
     <button class="linklike" type="button" onclick={() => (showServer = !showServer)}>
@@ -143,6 +147,10 @@
   .login-card {
     max-width: 420px;
     margin: 10vh auto 0;
+  }
+  .login-card.embedded {
+    max-width: none;
+    margin: 0;
   }
   .linklike {
     background: none;

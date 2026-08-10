@@ -9,12 +9,11 @@
   import Knowledge from "./lib/Knowledge.svelte";
   import Sources from "./lib/Sources.svelte";
   import Workspace from "./lib/Workspace.svelte";
-  import Login from "./lib/Login.svelte";
   import Logo from "./lib/Logo.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import GettingStarted from "./lib/GettingStarted.svelte";
 
-  let view = $state("loading"); // loading | login | setup | capture | knowledge | sources | workspace
+  let view = $state("loading"); // loading | setup | capture | knowledge | sources | workspace
   let health = $state(null);
   let workspace = $state(null); // GET /api/workspace snapshot
   let loadError = $state(null);
@@ -28,16 +27,14 @@
     try {
       loadError = null;
       health = await api.health();
-      // Required sign-in: the gate is a cached session on this device — it
-      // never blocks on the network (offline keeps working once signed in).
-      workspace = await api.workspaceStatus();
-      if (!workspace.signed_in) {
-        view = "login";
-        return;
-      }
+      // Accounts are optional: solo/local is the default, and the Workspace
+      // tab owns connecting to a server. Fail-soft — a broken status call
+      // must not block the app.
+      try {
+        workspace = await api.workspaceStatus();
+      } catch {}
       if (gotoSetup) view = "setup";
-      else if (view === "loading" || view === "login")
-        view = health.ready ? "capture" : "setup";
+      else if (view === "loading") view = health.ready ? "capture" : "setup";
       await refreshOnboarding();
       maybeOpenTour();
     } catch (e) {
@@ -88,21 +85,10 @@
     refreshOnboarding();
   });
 
-  function onSignedIn(status) {
-    workspace = status;
-    // Stay on "login" so refresh() routes with FRESH health.
-    refresh();
-  }
-
   function onWorkspaceStatus(status) {
     // The Workspace tab refreshes its own session snapshot on every visit —
     // adopt it here so the header can't go stale.
     workspace = status;
-  }
-
-  function onSignOut() {
-    workspace = null;
-    view = "login";
   }
 
   function onSetupDone() {
@@ -186,8 +172,6 @@
     {#if loadError}
       <p class="error" style="margin-top:16px">Could not reach the local engine: {loadError}</p>
     {/if}
-  {:else if view === "login"}
-    <Login serverUrl={workspace?.server_url} onSignedIn={onSignedIn} />
   {:else if view === "setup"}
     <!-- Never pin: extraction setup is not a gate on the rest of the app —
          Knowledge browsing and the Workspace tab work without AI. -->
@@ -210,7 +194,7 @@
   {:else if view === "sources"}
     <Sources {health} signedIn={workspace?.signed_in} />
   {:else if view === "workspace"}
-    <Workspace {onSignOut} onStatus={onWorkspaceStatus} />
+    <Workspace onStatus={onWorkspaceStatus} />
   {/if}
 </main>
 

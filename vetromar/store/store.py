@@ -1298,6 +1298,14 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def has_local_rows(self) -> bool:
+        """True iff any knowledge lives here — the signal that a first
+        workspace connect must ask before uploading a solo-era graph."""
+        for table in ("episodes", "units"):
+            if self._conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                return True
+        return False
+
     def reset_replication_for_rebind(self) -> int:
         """Point this store's replication at a NEW (empty) workspace log:
         every outbox record becomes pending again (the full graph re-uploads

@@ -46,7 +46,7 @@
   const cards = [
     {
       title: "Welcome to Vetromar",
-      body: "Vetromar turns your team's meetings, docs, and tools into one living knowledge base — every decision, linked and searchable.",
+      body: "Vetromar turns your meetings, docs, and tools into one living knowledge base — every decision, linked and searchable.",
       note: welcomeNote,
     },
     {
@@ -76,6 +76,17 @@
           {
             title: "Invite your team",
             body: "Vetromar gets better with every teammate — everyone's meetings and sources land in the same shared graph. Send an invite from the Workspace tab.",
+            go: { label: "Go to Workspace", tab: "workspace" },
+          },
+        ]
+      : []),
+    // Solo (no workspace connected): everything works locally; a server is
+    // the optional team/multi-device play.
+    ...(!workspaceName
+      ? [
+          {
+            title: "Working with a team?",
+            body: "Everything works right here on this computer, no account needed. When you want to sync with a team or your other devices, connect to a workspace server from the Workspace tab — entirely optional.",
             go: { label: "Go to Workspace", tab: "workspace" },
           },
         ]

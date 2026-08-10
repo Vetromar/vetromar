@@ -353,6 +353,50 @@ def test_binding_status_and_upload_decision(client, cloud_backend, isolated_env)
     assert decided == {"ok": True, "requeued": 1}
     assert client.get("/api/workspace/binding").json()["status"] == "ok"
 
+def test_solo_store_asks_before_first_upload(client, cloud_backend, isolated_env):
+    """Solo-era knowledge (captured with no account) must not bulk-upload on
+    first connect — the banner decision gates the sync."""
+    import os
+    from datetime import datetime, timezone
+
+    from vetromar.ingest.manual import add_source_episode
+    from vetromar.store import Store
+
+    # Capture BEFORE any account exists.
+    store = Store(os.environ["VETROMAR_DB"])
+    add_source_episode(
+        store,
+        title="Solo thoughts",
+        source_kind="note",
+        raw="Captured before any workspace existed.",
+        occurred_at=datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    store.close()
+
+    make_workspace(cloud_backend)
+    sign_in(client)
+    assert client.get("/api/workspace/binding").json()["status"] == "needs_decision"
+
+    job = client.post("/api/workspace/sync").json()
+    finished = _wait(client, job["job_id"])
+    assert finished["status"] == "error"
+    assert "Workspace tab" in finished["error"]
+
+    decided = client.post("/api/workspace/binding", json={"action": "upload"}).json()
+    assert decided["ok"] is True and decided["requeued"] >= 1
+    job = client.post("/api/workspace/sync").json()
+    finished = _wait(client, job["job_id"])
+    assert finished["status"] == "done"
+    assert finished["result"]["pushed"] >= 1
+    # The solo episode's change really reached the workspace log.
+    from sqlalchemy import select
+
+    from cloud.models import Change
+
+    with make_sessionmaker(cloud_backend["engine"])() as s:
+        assert s.scalar(select(Change).where(Change.table_name == "episodes"))
+
+
 def test_server_url_roundtrip(client, isolated_env):
     body = client.get("/api/workspace").json()
     assert body["server_url"] == "https://cloud.vetromar.test"

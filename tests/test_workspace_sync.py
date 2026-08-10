@@ -213,13 +213,38 @@ def test_cross_device_alias_merge(team):
 # -- workspace binding (M22: deletion/recreate must not silently cross-sync) --
 
 
-def test_binding_fresh_store_binds_on_first_sync(team):
+def test_binding_fresh_empty_store_binds_on_first_sync(team):
     from vetromar.workspace.engine import BOUND_KEY
 
     a = Store(":memory:")
-    seed_capture(a)
     sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
     assert a.get_replication_state(BOUND_KEY) == team["workspace_id"]
+    # Once bound, capture + sync flow without any decision.
+    seed_capture(a)
+    report = sync_workspace(
+        a, team["admin"], "dev-a", workspace_id=team["workspace_id"]
+    )
+    assert report.pushed >= 4
+    a.close()
+
+
+def test_binding_solo_store_asks_before_first_upload(team):
+    """A solo-era store (local knowledge, never synced anywhere) must NOT
+    bulk-upload on first connect — the human decides first."""
+    from vetromar.workspace.client import WorkspaceBindingError
+    from vetromar.workspace.engine import binding_status, rebind_and_upload
+
+    a = Store(":memory:")
+    seed_capture(a)
+    assert binding_status(a, team["workspace_id"]) == "needs_decision"
+    with pytest.raises(WorkspaceBindingError):
+        sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
+
+    rebind_and_upload(a, team["workspace_id"])
+    report = sync_workspace(
+        a, team["admin"], "dev-a", workspace_id=team["workspace_id"]
+    )
+    assert report.pushed >= 4
     a.close()
 
 
@@ -227,7 +252,6 @@ def test_binding_mismatch_blocks_sync(team):
     from vetromar.workspace.client import WorkspaceBindingError
 
     a = Store(":memory:")
-    seed_capture(a)
     sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
     with pytest.raises(WorkspaceBindingError):
         sync_workspace(a, team["admin"], "dev-a", workspace_id="ws_other")
@@ -252,6 +276,8 @@ def test_delete_workspace_then_rebind_reuploads_full_graph(cloud, team):
     from vetromar.workspace.engine import rebind_and_upload
 
     a = Store(":memory:")
+    # Bind while empty, then capture and upload the graph.
+    sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
     ep, unit, entity = seed_capture(a)
     sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
 
