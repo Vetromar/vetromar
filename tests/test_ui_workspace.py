@@ -143,6 +143,40 @@ def test_invite_url_composition(client, cloud_backend):
     assert invite["token"] in invite["url"]
 
 
+def test_member_reset_link_via_ui(client, cloud_backend):
+    make_workspace(cloud_backend)
+    sign_in(client)
+    invite = client.post("/api/workspace/invites", json={}).json()
+    cloud_backend["http"].post(
+        "/v1/invites/accept",
+        json={
+            "token": invite["token"],
+            "name": "Mo",
+            "email": "mo@acme.test",
+            "password": "memberpass123",
+        },
+    )
+    members = client.get("/api/workspace/members").json()["members"]
+    mo = next(m for m in members if m["email"] == "mo@acme.test")
+
+    r = client.post(f"/api/workspace/members/{mo['user_id']}/reset-link")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["url"].startswith("https://cloud.vetromar.test/reset-password?token=")
+    assert body["name"] == "Mo"
+
+    # The minted link really resets the password on the server.
+    confirm = cloud_backend["http"].post(
+        "/v1/auth/reset-confirm",
+        json={"token": body["token"], "password": "newpassword99"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    login = cloud_backend["http"].post(
+        "/v1/auth/login", json={"email": "mo@acme.test", "password": "newpassword99"}
+    )
+    assert login.status_code == 200
+
+
 def test_members_flow_through_ui(client, cloud_backend):
     make_workspace(cloud_backend)
     sign_in(client)

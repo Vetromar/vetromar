@@ -66,22 +66,6 @@
   }
 
   let showReset = $state(false);
-  let resetBusy = $state(false);
-  let resetSent = $state(false);
-  let resetErr = $state(null);
-
-  async function requestReset() {
-    resetBusy = true;
-    resetErr = null;
-    try {
-      await api.workspaceResetRequest(email.trim());
-      resetSent = true;
-    } catch (ex) {
-      resetErr = ex.message;
-    } finally {
-      resetBusy = false;
-    }
-  }
 </script>
 
 <div class="card stack login-card">
@@ -134,25 +118,12 @@
         Forgot password?
       </button>
     </p>
-  {:else if resetSent}
-    <p class="muted">
-      ✓ If an account exists for {email.trim()}, a reset link is on its way —
-      check your email.
-    </p>
   {:else}
-    <div class="stack">
-      <p class="muted">
-        Enter your email above, then request a reset link — it opens a page on
-        your workspace server where you choose a new password.
-      </p>
-      <div class="row">
-        <button type="button" disabled={resetBusy || !email.trim()} onclick={requestReset}>
-          {#if resetBusy}<span class="spinner"></span>{:else}Send reset link{/if}
-        </button>
-        <button type="button" onclick={() => (showReset = false)}>Cancel</button>
-      </div>
-      {#if resetErr}<p class="error">{resetErr}</p>{/if}
-    </div>
+    <p class="muted">
+      A workspace admin can generate a reset link for you from their Workspace
+      tab. If you run the server yourself, mint one on the server box:
+      <code>python -m cloud reset-link your@email</code>
+    </p>
   {/if}
   <p class="muted">
     No workspace yet?

@@ -69,7 +69,7 @@
     }
   });
 
-  // A finished sync updates last-synced/lock state — re-pull the cache.
+  // A finished sync updates last-synced state — re-pull the cache.
   $effect(() => {
     workspaceJob.finishedCount;
     loadStatus();
@@ -80,15 +80,12 @@
     await workspaceJob.start("Workspace sync", "workspace-sync", () => api.workspaceSync());
   }
 
-  let inviteEmail = $state("");
-
   async function makeInvite() {
     inviteBusy = true;
     inviteErr = null;
     copied = false;
     try {
-      invite = await api.workspaceInvite("member", inviteEmail.trim() || null);
-      inviteEmail = "";
+      invite = await api.workspaceInvite("member");
     } catch (e) {
       inviteErr = e.message;
     } finally {
@@ -100,6 +97,29 @@
     try {
       await navigator.clipboard.writeText(invite.url);
       copied = true;
+    } catch {
+      // clipboard blocked — the link is selectable below
+    }
+  }
+
+  let resetLink = $state(null); // { url, name, expires_at }
+  let resetErr = $state(null);
+  let resetCopied = $state(false);
+
+  async function makeResetLink(m) {
+    resetErr = null;
+    resetCopied = false;
+    try {
+      resetLink = await api.workspaceMemberResetLink(m.user_id);
+    } catch (e) {
+      resetErr = e.message;
+    }
+  }
+
+  async function copyResetLink() {
+    try {
+      await navigator.clipboard.writeText(resetLink.url);
+      resetCopied = true;
     } catch {
       // clipboard blocked — the link is selectable below
     }
@@ -217,29 +237,37 @@
             {m.name} <span class="muted">· {m.email} · {m.role}</span>
           </span>
           {#if isAdmin && m.user_id !== status?.user_id}
-            <button onclick={() => removeMember(m)}>Remove</button>
+            <span class="row" style="gap: 8px">
+              <button onclick={() => makeResetLink(m)}>Reset password</button>
+              <button onclick={() => removeMember(m)}>Remove</button>
+            </span>
           {/if}
         </li>
       {/each}
     </ul>
     {#if removeErr}<p class="error">{removeErr}</p>{/if}
+    {#if resetErr}<p class="error">{resetErr}</p>{/if}
+    {#if resetLink}
+      <div class="stack">
+        <div class="row" style="gap: 8px; align-items: center">
+          <input readonly value={resetLink.url} style="flex: 1" onfocus={(e) => e.target.select()} />
+          <button class="primary" onclick={copyResetLink}>{resetCopied ? "Copied ✓" : "Copy"}</button>
+        </div>
+        <p class="muted">
+          Send this to {resetLink.name} over any channel — it lets them choose a
+          new password. Single use, expires in 60 minutes. Setting a new
+          password signs them out everywhere.
+        </p>
+      </div>
+    {/if}
 
     {#if isAdmin}
       <div class="stack" style="margin-top: 8px">
         <div class="row" style="gap: 8px; align-items: center">
-          <input
-            type="email"
-            bind:value={inviteEmail}
-            placeholder="Email the invite (optional)"
-            style="flex: 1"
-          />
           <button disabled={inviteBusy} onclick={makeInvite}>
             {#if inviteBusy}<span class="spinner"></span>{:else}Generate invite link{/if}
           </button>
         </div>
-        {#if invite?.emailed_to}
-          <p class="muted">✓ Invite emailed to {invite.emailed_to}.</p>
-        {/if}
         {#if invite}
           <div class="row" style="gap: 8px; align-items: center">
             <input readonly value={invite.url} style="flex: 1" onfocus={(e) => e.target.select()} />
@@ -277,8 +305,8 @@
       <div class="stack">
         <p class="muted">
           This permanently deletes your account. If you're the only person in
-          the workspace, the workspace (and its subscription) is deleted with
-          it. If teammates remain, you leave the workspace and your login is
+          the workspace, the workspace is deleted with it. If teammates
+          remain, you leave the workspace and your login is
           erased. Knowledge stored on this computer is <strong>not</strong>
           deleted.
         </p>

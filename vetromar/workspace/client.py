@@ -95,14 +95,11 @@ class CloudClient:
     def members(self) -> dict:
         return self._request("GET", "/v1/members")
 
-    def create_invite(self, role: str = "member", email: Optional[str] = None) -> dict:
-        body: dict = {"role": role}
-        if email:
-            body["email"] = email
-        return self._request("POST", "/v1/invites", json=body)
+    def create_invite(self, role: str = "member") -> dict:
+        return self._request("POST", "/v1/invites", json={"role": role})
 
-    def reset_request(self, email: str) -> dict:
-        return self._request("POST", "/v1/auth/reset-request", json={"email": email})
+    def member_reset_link(self, user_id: str) -> dict:
+        return self._request("POST", f"/v1/members/{user_id}/reset-link")
 
     def accept_invite(self, token: str, name: str, email: str, password: str) -> dict:
         return self._request(

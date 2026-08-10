@@ -84,11 +84,6 @@ class WorkspaceSignIn(BaseModel):
 
 class WorkspaceInvite(BaseModel):
     role: str = "member"
-    email: Optional[str] = None
-
-
-class WorkspaceResetRequest(BaseModel):
-    email: str
 
 
 class WebsiteOpen(BaseModel):
@@ -543,25 +538,20 @@ def create_app() -> FastAPI:
     @app.post("/api/workspace/invites")
     def workspace_invite(body: WorkspaceInvite) -> dict:
         config = load_config()
-        resp = _workspace_call(lambda c: c.create_invite(body.role, email=body.email))
+        resp = _workspace_call(lambda c: c.create_invite(body.role))
         # The copyable link: the server's own invite-accept page + the
         # one-time token.
         resp["url"] = config.cloud_api_url.rstrip("/") + resp["url_path"]
         return resp
 
-    @app.post("/api/workspace/reset-request")
-    def workspace_reset_request(body: WorkspaceResetRequest) -> dict:
-        # Unauthenticated by design — it's the signed-out "forgot password" path.
-        from vetromar.workspace.client import CloudClient, WorkspaceError
-
+    @app.post("/api/workspace/members/{user_id}/reset-link")
+    def workspace_member_reset_link(user_id: str) -> dict:
+        # Admin-minted one-time reset link — the copyable-link idiom again;
+        # the server never emails anyone.
         config = load_config()
-        client = CloudClient(config.cloud_api_url)
-        try:
-            return client.reset_request(body.email)
-        except WorkspaceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        finally:
-            client.close()
+        resp = _workspace_call(lambda c: c.member_reset_link(user_id))
+        resp["url"] = config.cloud_api_url.rstrip("/") + resp["url_path"]
+        return resp
 
     @app.post("/api/website/open")
     def website_open(body: WebsiteOpen) -> dict:

@@ -82,9 +82,9 @@ export const api = {
   workspaceMembers: () => request("/api/workspace/members"),
   workspaceRemoveMember: (userId) =>
     request("/api/workspace/members/" + userId, { method: "DELETE" }),
-  workspaceInvite: (role = "member", email = null) =>
-    jsonPost("/api/workspace/invites", email ? { role, email } : { role }),
-  workspaceResetRequest: (email) => jsonPost("/api/workspace/reset-request", { email }),
+  workspaceInvite: (role = "member") => jsonPost("/api/workspace/invites", { role }),
+  workspaceMemberResetLink: (userId) =>
+    request("/api/workspace/members/" + userId + "/reset-link", { method: "POST" }),
   workspaceServerUrl: (url) => jsonPost("/api/workspace/server-url", { url }),
   workspaceOpenSignup: () => request("/api/workspace/open-signup", { method: "POST" }),
   websiteOpen: (path) => jsonPost("/api/website/open", { path }),
