@@ -32,8 +32,6 @@ def _detail(resp: httpx.Response) -> str:
         detail = resp.json().get("detail")
     except Exception:  # noqa: BLE001
         detail = None
-    if isinstance(detail, dict):
-        return detail.get("reason", str(detail))
     return detail or f"HTTP {resp.status_code}"
 
 

@@ -32,7 +32,6 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("VETROMAR_CLOUD_CREDENTIALS", str(tmp_path / "credentials-cloud"))
     monkeypatch.setenv("VETROMAR_WORKSPACE_CACHE", str(tmp_path / "workspace.json"))
-    monkeypatch.setenv("VETROMAR_WEBSITE_URL", "https://vetromar.test")
     monkeypatch.setenv("VETROMAR_CLOUD_API_URL", "https://cloud.vetromar.test")
     monkeypatch.delenv("VETROMAR_CLOUD_TOKEN", raising=False)
     monkeypatch.setattr(config_mod, "CREDENTIALS_PATH", tmp_path / "credentials")

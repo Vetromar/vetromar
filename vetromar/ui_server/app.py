@@ -86,10 +86,6 @@ class WorkspaceInvite(BaseModel):
     role: str = "member"
 
 
-class WebsiteOpen(BaseModel):
-    path: str = "/"
-
-
 class EpisodeRename(BaseModel):
     title: str
 
@@ -553,24 +549,6 @@ def create_app() -> FastAPI:
         resp["url"] = config.cloud_api_url.rstrip("/") + resp["url_path"]
         return resp
 
-    @app.post("/api/website/open")
-    def website_open(body: WebsiteOpen) -> dict:
-        # The Tauri webview has no opener plugin, so target="_blank" anchors go
-        # nowhere — the sidecar opens the system browser instead. Only
-        # website pages, never arbitrary
-        # URLs: the path is joined onto the configured website base.
-        import webbrowser
-
-        config = load_config()
-        path = body.path if body.path.startswith("/") else "/" + body.path
-        url = config.website_base_url.rstrip("/") + path
-        opened = False
-        try:
-            opened = bool(webbrowser.open(url))
-        except Exception:  # noqa: BLE001 — headless envs; the URL still renders
-            opened = False
-        return {"url": url, "opened": opened}
-
     @app.get("/api/workspace/binding")
     def workspace_binding() -> dict:
         """Does this machine's store belong to the signed-in workspace?
@@ -657,8 +635,8 @@ def create_app() -> FastAPI:
     @app.post("/api/sources/{name}/setup-page")
     def sources_setup_page(name: str) -> dict:
         # Opens the provider's create-an-app console in the system browser
-        # (the website/open pattern) — allowlisted to catalog setup_urls only,
-        # never arbitrary URLs from the frontend.
+        # (the Tauri webview has no opener plugin) — allowlisted to catalog
+        # setup_urls only, never arbitrary URLs from the frontend.
         from vetromar.sources.catalog import catalog_entry
 
         entry = catalog_entry(name)

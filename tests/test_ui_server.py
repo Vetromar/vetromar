@@ -118,19 +118,6 @@ def test_setup_cloud_without_access_is_400(client, monkeypatch):
     assert "AI provider" in r.json()["detail"]
 
 
-def test_website_open_joins_configured_base(client, monkeypatch):
-    import webbrowser
-
-    seen = {}
-    monkeypatch.setattr(webbrowser, "open", lambda url: seen.setdefault("url", url) or True)
-    r = client.post("/api/website/open", json={"path": "create-workspace.html"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["opened"] is True
-    assert body["url"].endswith("/create-workspace.html")
-    assert seen["url"] == body["url"]
-
-
 def test_workspace_token_alone_is_not_ai_access(isolated_env, monkeypatch):
     # Post-pivot a workspace session is sync-only — health must not report
     # AI access from it.

@@ -208,12 +208,6 @@ class Config:
             "VETROMAR_CLOUD_API_URL", "http://localhost:8787"
         )
     )
-    # Where invite links point (the static website with invite-accept.html).
-    website_base_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "VETROMAR_WEBSITE_URL", "https://vetromar.com"
-        )
-    )
     workspace_sync_interval_minutes: int = field(
         default_factory=lambda: int(
             os.environ.get("VETROMAR_WORKSPACE_SYNC_INTERVAL_MINUTES", "5")
@@ -379,9 +373,6 @@ def load_config() -> Config:
         ),
         cloud_api_url=_resolve(
             "VETROMAR_CLOUD_API_URL", file_cfg, "cloud_api_url", "http://localhost:8787"
-        ),
-        website_base_url=_resolve(
-            "VETROMAR_WEBSITE_URL", file_cfg, "website_base_url", "https://vetromar.com"
         ),
         workspace_sync_interval_minutes=_resolve(
             "VETROMAR_WORKSPACE_SYNC_INTERVAL_MINUTES",

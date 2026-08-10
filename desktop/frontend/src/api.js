@@ -87,7 +87,6 @@ export const api = {
     request("/api/workspace/members/" + userId + "/reset-link", { method: "POST" }),
   workspaceServerUrl: (url) => jsonPost("/api/workspace/server-url", { url }),
   workspaceOpenSignup: () => request("/api/workspace/open-signup", { method: "POST" }),
-  websiteOpen: (path) => jsonPost("/api/website/open", { path }),
   workspaceSync: () => request("/api/workspace/sync", { method: "POST" }),
   workspaceBinding: () => request("/api/workspace/binding"),
   workspaceBindingUpload: () => jsonPost("/api/workspace/binding", { action: "upload" }),
