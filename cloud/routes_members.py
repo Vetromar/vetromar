@@ -1,6 +1,8 @@
-"""Member listing/removal and device registration."""
+"""Member listing/removal, reset links, and device registration."""
 
 from __future__ import annotations
+
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,7 +10,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .deps import AuthContext, current_auth, get_session, require_admin
-from .models import Device, Membership, Token, User, new_id, utcnow
+from .models import (
+    RESET_TOKEN_MINUTES,
+    Device,
+    Membership,
+    ResetToken,
+    Token,
+    User,
+    new_id,
+    utcnow,
+)
+from .security import generate_token, hash_token
 
 router = APIRouter()
 
@@ -68,6 +80,47 @@ def remove_member(
     # Removal must cut sync access immediately — revoke every token.
     session.execute(delete(Token).where(Token.user_id == user_id))
     session.flush()
+
+
+@router.post("/v1/members/{user_id}/reset-link", status_code=201)
+def member_reset_link(
+    user_id: str,
+    auth: AuthContext = Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """The server never sends email — an admin mints a reset link here and
+    hands it to the member over any channel."""
+    row = session.execute(
+        select(Membership, User)
+        .join(User, User.id == Membership.user_id)
+        .where(
+            Membership.workspace_id == auth.workspace.id,
+            Membership.user_id == user_id,
+            Membership.is_active.is_(True),
+            User.is_active.is_(True),
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(404, "no active member with that id")
+    _, user = row
+    raw = generate_token()
+    expires = utcnow() + timedelta(minutes=RESET_TOKEN_MINUTES)
+    session.add(
+        ResetToken(
+            id=new_id("rst"),
+            user_id=user.id,
+            token_hash=hash_token(raw),
+            expires_at=expires,
+        )
+    )
+    # Raw token is returned exactly once; only its hash is stored.
+    return {
+        "token": raw,
+        "url_path": f"/reset-password?token={raw}",
+        "expires_at": expires.isoformat() + "Z",
+        "email": user.email,
+        "name": user.name,
+    }
 
 
 class RegisterDevice(BaseModel):
