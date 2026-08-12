@@ -181,6 +181,19 @@ class Config:
         default_factory=lambda: int(os.environ.get("VETROMAR_AUTO_SYNC_INTERVAL_MINUTES", "60"))
     )
 
+    # Virtual-meeting capture (macOS 14.2+, desktop app). Detection is
+    # notify-only — the bundled helper watches for meeting apps using the
+    # microphone; recording starts only on an explicit click. Grace = seconds
+    # after the app releases the mic before an in-flight recording auto-stops.
+    meeting_detect_enabled: bool = field(
+        default_factory=lambda: _as_bool(
+            os.environ.get("VETROMAR_MEETING_DETECT_ENABLED", "true")
+        )
+    )
+    meeting_grace_seconds: int = field(
+        default_factory=lambda: int(os.environ.get("VETROMAR_MEETING_GRACE_SECONDS", "20"))
+    )
+
     # Optional local cross-encoder rerank over fused search results. Off by
     # default: it downloads a small ONNX model on first use and adds per-query
     # latency — worth it on big stores, one toggle otherwise.
@@ -369,6 +382,20 @@ def load_config() -> Config:
             file_cfg,
             "auto_sync_interval_minutes",
             60,
+            cast=int,
+        ),
+        meeting_detect_enabled=_resolve(
+            "VETROMAR_MEETING_DETECT_ENABLED",
+            file_cfg,
+            "meeting_detect_enabled",
+            True,
+            cast=_as_bool,
+        ),
+        meeting_grace_seconds=_resolve(
+            "VETROMAR_MEETING_GRACE_SECONDS",
+            file_cfg,
+            "meeting_grace_seconds",
+            20,
             cast=int,
         ),
         cloud_api_url=_resolve(

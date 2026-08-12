@@ -25,7 +25,9 @@ summarized here for quick reference.
 - `desktop/` — Svelte 5 frontend + Tauri shell + PyInstaller sidecar spec.
   Full build: `desktop/build.sh`. Frontend-only changes can rebuild
   shell-only, but ANY Python delta needs the full build (a stale sidecar
-  404s new routes).
+  404s new routes). `desktop/helper/main.swift` → `vetromar-helper`, the
+  Core Audio seam (macOS 14.2+) for meeting detection (mic-usage monitor)
+  and system-audio process taps; build.sh compiles it into the sidecar dir.
 - `docs/` — self-hosting guide. The vetromar.com site lives in the separate
   private repo `Vetromar/site` (Vercel deploys its `main`); release assets in
   `Vetromar/releases` (which also runs the daily download-stats snapshot).
@@ -69,5 +71,10 @@ python -m cloud --port 8787       # self-hosted workspace server, dev
   alive across tab switches; wheel handlers need `{passive:false}`.
 - Kill scratch dev servers by PID (`lsof -ti :PORT | xargs kill`) — `kill
   %N` across shell invocations is a no-op.
+- `vetromar-helper` exits when its stdin closes (parent-death safety) — a
+  shell `&` background job gets /dev/null stdin and dies instantly; hold
+  stdin open (`sleep 10 | ./vetromar-helper …`) when testing. An ungranted
+  System Audio Recording permission makes taps deliver silent zeros, not
+  errors — `capture/meeting.py:_has_audio` is the detection seam.
 - Headless verification pattern for UI changes:
   `.claude/skills/verify/SKILL.md`.

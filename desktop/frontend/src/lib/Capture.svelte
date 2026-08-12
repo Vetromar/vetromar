@@ -29,7 +29,8 @@
   });
   const elapsed = $derived(captureJob.startedAt ? fmtElapsed(now - captureJob.startedAt) : "");
   function fmtElapsed(ms) {
-    const s = Math.floor(ms / 1000);
+    // Clamp: right after attach() the ticker's `now` can predate startedAt.
+    const s = Math.max(0, Math.floor(ms / 1000));
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
 
@@ -79,6 +80,41 @@
     );
   }
 
+  // Meeting detection: poll while this tab is mounted so a "Zoom is using the
+  // microphone" banner appears without the user touching anything. The tray
+  // notification covers the window-hidden case; this covers the open one.
+  let meeting = $state(null);
+  $effect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await api.meetingsStatus();
+        if (alive) meeting = s;
+      } catch {
+        if (alive) meeting = null;
+      }
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  });
+  const meetingDetected = $derived(
+    meeting?.state === "detected" && meeting?.candidate && !busy
+  );
+
+  async function startMeetingRecord() {
+    reset();
+    try {
+      const { job_id } = await api.meetingRecord(title.trim());
+      captureJob.attach(job_id, "Meeting recording", "meeting-record");
+    } catch (e) {
+      localErr = e.message;
+    }
+  }
+
   async function stopRecord() {
     if (!captureJob.jobId) return;
     try {
@@ -105,6 +141,20 @@
       oninput={() => (localErr = null)}
     />
   </div>
+
+  {#if meetingDetected && !result}
+    <div class="meeting-banner row spread">
+      <div>
+        <strong>{meeting.candidate.name} is using the microphone</strong>
+        <p class="muted" style="margin:2px 0 0; font-size:13px">
+          Capture both sides of the call — your mic plus the meeting's audio.
+        </p>
+      </div>
+      <button class="primary" onclick={startMeetingRecord}>
+        Start meeting capture
+      </button>
+    </div>
+  {/if}
 
   {#if !busy && !result}
     <div
@@ -188,3 +238,12 @@
 {#if result}
   <Results {result} />
 {/if}
+
+<style>
+  .meeting-banner {
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+</style>

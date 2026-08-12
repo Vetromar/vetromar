@@ -20,6 +20,16 @@ rm -rf src-tauri/sidecar
 mkdir -p src-tauri/sidecar
 cp -R dist/vetromar-sidecar src-tauri/sidecar/vetromar-sidecar
 
+# Native meeting-capture helper (Core Audio process taps, macOS 14.2+ at
+# runtime). It lands inside the sidecar dir so the Mach-O codesign walk below
+# signs it with the sidecar entitlements automatically.
+echo "==> Compiling the audio capture helper (swiftc)…"
+swiftc -O -target arm64-apple-macos14.2 \
+  -o src-tauri/sidecar/vetromar-sidecar/vetromar-helper helper/main.swift
+# Informational only — build hosts older than 14.2 still produce a valid app.
+src-tauri/sidecar/vetromar-sidecar/vetromar-helper selftest \
+  || echo "    (helper selftest failed on this host — feature self-gates at runtime)"
+
 # Smoke-test the bundled binary before we wrap it.
 echo "==> Smoke-testing the bundled sidecar…"
 BIN="src-tauri/sidecar/vetromar-sidecar/vetromar-sidecar"

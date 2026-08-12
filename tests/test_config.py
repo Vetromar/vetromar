@@ -160,3 +160,29 @@ def test_auto_sync_toml_roundtrip(isolated, monkeypatch):
     c = load_config()
     assert c.auto_sync_enabled is True
     assert c.auto_sync_interval_minutes == 15
+
+
+# -- meeting capture (detection + grace) --------------------------------------
+
+
+def test_meeting_detect_defaults(isolated, monkeypatch):
+    monkeypatch.delenv("VETROMAR_MEETING_DETECT_ENABLED", raising=False)
+    monkeypatch.delenv("VETROMAR_MEETING_GRACE_SECONDS", raising=False)
+    c = load_config()
+    assert c.meeting_detect_enabled is True  # notify-only, so on by default
+    assert c.meeting_grace_seconds == 20
+
+
+def test_meeting_detect_env_false_string_parses_false(isolated, monkeypatch):
+    save_config({"meeting_detect_enabled": True})
+    monkeypatch.setenv("VETROMAR_MEETING_DETECT_ENABLED", "false")
+    assert load_config().meeting_detect_enabled is False
+
+
+def test_meeting_settings_from_file(isolated, monkeypatch):
+    monkeypatch.delenv("VETROMAR_MEETING_DETECT_ENABLED", raising=False)
+    monkeypatch.delenv("VETROMAR_MEETING_GRACE_SECONDS", raising=False)
+    save_config({"meeting_detect_enabled": False, "meeting_grace_seconds": 45})
+    c = load_config()
+    assert c.meeting_detect_enabled is False
+    assert c.meeting_grace_seconds == 45

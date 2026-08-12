@@ -21,10 +21,10 @@ from vetromar.schema import Transcript, TranscriptSegment
 ProgressFn = Callable[[str, Optional[float]], None]
 
 
-def transcribe_and_diarize(
-    audio_path: str | Path, config: Config, progress: ProgressFn | None = None
-) -> Transcript:
-    report: ProgressFn = progress or (lambda stage, pct: None)
+def _asr_and_align(audio_path: str, config: Config, report: ProgressFn):
+    """The shared ASR + word-alignment stages. Returns (result, audio, device)
+    ready for diarization — or for direct segment mapping when the speaker is
+    already known (meeting channels)."""
     try:
         import whisperx
     except ImportError as exc:
@@ -36,7 +36,6 @@ def transcribe_and_diarize(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
-    audio_path = str(audio_path)
 
     # ASR — the long stage on CPU; whisperx reports per-batch progress.
     report("Loading transcription model", None)
@@ -53,6 +52,37 @@ def transcribe_and_diarize(
         language_code=result["language"], device=device
     )
     result = whisperx.align(result["segments"], align_model, metadata, audio, device)
+    return result, audio, device
+
+
+def transcribe_only(
+    audio_path: str | Path,
+    config: Config,
+    speaker_label: str,
+    progress: ProgressFn | None = None,
+) -> list[TranscriptSegment]:
+    """ASR + alignment with a fixed speaker — the meeting-channel path, where
+    the channel already identifies the party and pyannote has nothing to add."""
+    report: ProgressFn = progress or (lambda stage, pct: None)
+    result, _audio, _device = _asr_and_align(str(audio_path), config, report)
+    return [
+        TranscriptSegment(
+            speaker=speaker_label,
+            text=seg["text"].strip(),
+            start_ms=int(seg["start"] * 1000),
+            end_ms=int(seg["end"] * 1000),
+        )
+        for seg in result["segments"]
+        if seg.get("text", "").strip()
+    ]
+
+
+def transcribe_and_diarize(
+    audio_path: str | Path, config: Config, progress: ProgressFn | None = None
+) -> Transcript:
+    report: ProgressFn = progress or (lambda stage, pct: None)
+    result, audio, device = _asr_and_align(str(audio_path), config, report)
+    import whisperx
 
     report("Identifying speakers", None)
 

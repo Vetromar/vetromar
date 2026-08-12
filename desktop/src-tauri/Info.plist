@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Vetromar records meeting audio to capture and extract decisions.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Vetromar records the meeting app's system audio so both sides of a call are captured.</string>
 </dict>
 </plist>

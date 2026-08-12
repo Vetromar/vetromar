@@ -169,6 +169,17 @@ export function startBackgroundWatch() {
         // server briefly unreachable — retry on the next tick
       }
       try {
+        // A tray/notification-started meeting recording renders in the
+        // Capture tab like a manual one, Stop button included.
+        const active = await api.jobsActive("meeting-record");
+        const untracked = active.find((j) => j.id !== captureJob.jobId);
+        if (untracked && !captureJob.running) {
+          captureJob.attach(untracked.id, "Meeting recording", "meeting-record");
+        }
+      } catch {
+        // ditto
+      }
+      try {
         const active = await api.jobsActive("workspace-sync");
         const untracked = active.find((j) => j.id !== workspaceJob.jobId);
         if (untracked && !workspaceJob.running) {

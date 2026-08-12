@@ -35,36 +35,62 @@ def record_mic(
 
     `stop_event` (a `threading.Event`) is the non-interactive stop signal used
     by the desktop UI's Record button: when set, recording ends. The CLI path
-    passes none and still stops on Ctrl-C or `duration_s`."""
-    import numpy as np
+    passes none and still stops on Ctrl-C or `duration_s`.
+
+    Audio streams to disk as it arrives — a meeting-length recording must
+    never grow an in-RAM buffer for hours."""
+    import queue
+
     import sounddevice as sd
     import soundfile as sf
 
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    chunks: list[np.ndarray] = []
+    chunks: queue.Queue = queue.Queue()
 
     def _callback(indata, frames, time_info, status):  # noqa: ANN001
-        chunks.append(indata.copy())
+        chunks.put(indata.copy())
 
+    wrote_any = False
     stream = sd.InputStream(samplerate=samplerate, channels=1, callback=_callback)
-    try:
-        with stream:
-            if duration_s is not None:
-                sd.sleep(int(duration_s * 1000))
-            elif stop_event is not None:
-                while not stop_event.is_set():
-                    sd.sleep(100)
-            else:
-                print("Recording... press Ctrl-C to stop.")
-                while True:
-                    sd.sleep(1000)
-    except KeyboardInterrupt:
-        pass
+    with sf.SoundFile(
+        str(out_path), mode="w", samplerate=samplerate, channels=1, subtype="PCM_16"
+    ) as out:
 
-    if not chunks:
+        def _drain() -> None:
+            nonlocal wrote_any
+            while True:
+                try:
+                    chunk = chunks.get_nowait()
+                except queue.Empty:
+                    return
+                out.write(chunk)
+                wrote_any = True
+
+        try:
+            with stream:
+                if duration_s is not None:
+                    import time
+
+                    deadline = time.monotonic() + duration_s
+                    while time.monotonic() < deadline:
+                        sd.sleep(100)
+                        _drain()
+                elif stop_event is not None:
+                    while not stop_event.is_set():
+                        sd.sleep(100)
+                        _drain()
+                else:
+                    print("Recording... press Ctrl-C to stop.")
+                    while True:
+                        sd.sleep(1000)
+                        _drain()
+        except KeyboardInterrupt:
+            pass
+        _drain()
+
+    if not wrote_any:
+        out_path.unlink(missing_ok=True)
         raise RuntimeError("no audio captured")
-    audio = np.concatenate(chunks, axis=0)
-    sf.write(str(out_path), audio, samplerate)
     return out_path

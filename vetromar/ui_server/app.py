@@ -61,6 +61,20 @@ class AutoSyncSettings(BaseModel):
     interval_minutes: int
 
 
+class MeetingRecordStart(BaseModel):
+    title: str = ""  # empty → auto-generated date/time title
+    when: Optional[str] = None
+
+
+class MeetingSettings(BaseModel):
+    enabled: bool
+    grace_seconds: int
+
+
+class TranscriptionSettings(BaseModel):
+    mode: str  # "auto" | "local" | "cloud"
+
+
 class ProviderSetup(BaseModel):
     provider: str  # "anthropic" | "openai"
     api_key: Optional[str] = None
@@ -161,6 +175,38 @@ def _run_pipeline_on(job: Job, audio_path: Path, title: str, when: datetime) -> 
         store.close()
     job.set_stage("Done", 100.0)
     return _pipeline_payload(episode, units, markdown)
+
+
+def _run_meeting_pipeline_on(job: Job, audio_path: Path, title: str, when: datetime) -> dict:
+    """The meeting-record tail: channel-aware transcription, then the same
+    stages as _run_pipeline_on. Same thread rules (fresh Store per worker)."""
+    from vetromar.capture.meeting import run_meeting_pipeline
+
+    config = load_config()
+    config.ensure_dirs()
+    operations.ensure_backend_ready(config)
+    job.set_stage("Preparing", None)
+    store = Store(config.db_path)
+    try:
+        episode, units, markdown = run_meeting_pipeline(
+            audio_path,
+            title=title,
+            config=config,
+            store=store,
+            occurred_at=when,
+            progress=job.set_stage,
+        )
+    finally:
+        store.close()
+    job.set_stage("Done", 100.0)
+    return _pipeline_payload(episode, units, markdown)
+
+
+# Meeting detection state + helper supervision. Created always (routes need
+# status()), started only by run_server — the scheduler rule.
+from vetromar.ui_server.meetings import MeetingMonitor  # noqa: E402
+
+_MEETINGS = MeetingMonitor(_JOBS, pipeline_tail=_run_meeting_pipeline_on)
 
 
 def create_app() -> FastAPI:
@@ -410,10 +456,83 @@ def create_app() -> FastAPI:
     @app.post("/api/record/stop")
     def record_stop(body: RecordStop) -> dict:
         job = _JOBS.get(body.job_id)
-        if job is None or job.kind != "record":
+        if job is None or job.kind not in ("record", "meeting-record"):
             raise HTTPException(status_code=404, detail="no such record job")
         job.stop_event.set()
         return job.public()
+
+    # -- virtual-meeting capture (macOS 14.2+; detection is notify-only) ------
+
+    @app.get("/api/meetings/status")
+    def meetings_status() -> dict:
+        return _MEETINGS.status()
+
+    @app.post("/api/meetings/record")
+    def meetings_record(body: MeetingRecordStart) -> dict:
+        occurred_at = _parse_when(body.when)
+        title = body.title.strip() or operations.default_meeting_title(occurred_at)
+        try:
+            job, started = _MEETINGS.start_recording(title, occurred_at)
+        except ConfigError as exc:
+            raise _config_http(exc)
+        return {"job_id": job.id, "already_running": not started}
+
+    @app.get("/api/settings/meetings")
+    def meetings_settings_get() -> dict:
+        config = load_config()
+        return {
+            "enabled": config.meeting_detect_enabled,
+            "grace_seconds": config.meeting_grace_seconds,
+            "supported": _MEETINGS.supported(),
+        }
+
+    @app.post("/api/settings/meetings")
+    def meetings_settings_set(body: MeetingSettings) -> dict:
+        if body.grace_seconds < 5:
+            raise HTTPException(
+                status_code=400, detail="Grace period must be at least 5 seconds."
+            )
+        save_config(
+            {
+                "meeting_detect_enabled": body.enabled,
+                "meeting_grace_seconds": body.grace_seconds,
+            }
+        )
+        return meetings_settings_get()
+
+    @app.get("/api/settings/transcription")
+    def transcription_settings_get() -> dict:
+        from vetromar.transcription.assets import transcription_models_status
+        from vetromar.transcription.base import resolve_transcription_mode
+
+        config = load_config()
+        return {
+            "mode": config.transcribe,
+            "effective": resolve_transcription_mode(config),
+            "has_deepgram_key": bool(config.deepgram_api_key),
+            "local_models_present": bool(transcription_models_status(config)["present"]),
+        }
+
+    @app.post("/api/settings/transcription")
+    def transcription_settings_set(body: TranscriptionSettings) -> dict:
+        mode = body.mode.strip().lower()
+        if mode not in ("auto", "local", "cloud"):
+            raise HTTPException(
+                status_code=400,
+                detail="Transcription mode must be auto, local, or cloud.",
+            )
+        # Cloud without a key would fail at the first capture — reject now.
+        # Local without models saves fine: the response's local_models_present
+        # flag drives the download nudge, and the capture-time ConfigError in
+        # LocalWhisperXBackend stays the hard backstop.
+        if mode == "cloud" and not load_config().deepgram_api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Cloud transcription needs a Deepgram API key — add one "
+                "in Settings first.",
+            )
+        save_config({"transcribe": mode})
+        return transcription_settings_get()
 
     @app.get("/api/jobs")
     def list_jobs(kind: Optional[str] = None, active: bool = False) -> list[dict]:
@@ -974,6 +1093,26 @@ def run_server(host: str = "127.0.0.1", port: int = 0) -> None:
     # Contract with the desktop shell: this exact line, flushed, before serving.
     print(f"PORT={port}", flush=True)
     sys.stdout.flush()
+    # Persist logs: the bundled app's stderr goes nowhere (LaunchServices), so
+    # a job traceback (the detail behind every VM-100) would be lost without
+    # this. Best-effort — a read-only home must not block the app.
+    try:
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        log_path = Path.home() / ".vetromar" / "logs" / "sidecar.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        root = logging.getLogger()
+        root.addHandler(handler)
+        if root.level > logging.INFO or root.level == logging.NOTSET:
+            root.setLevel(logging.INFO)
+        logging.getLogger(__name__).info("sidecar starting on port %s", port)
+    except OSError:
+        pass
     # Keep the agent-facing MCP shim pointing at THIS engine (real server only —
     # create_app()/tests never touch the user's ~/.vetromar). Best-effort: a
     # read-only home must not block the app.
@@ -990,11 +1129,13 @@ def run_server(host: str = "127.0.0.1", port: int = 0) -> None:
     scheduler.start()
     ws_scheduler = WorkspaceSyncScheduler(_JOBS)
     ws_scheduler.start()
+    _MEETINGS.start()
     try:
         uvicorn.run(create_app(), host=host, port=port, log_level="warning")
     finally:
         scheduler.stop()
         ws_scheduler.stop()
+        _MEETINGS.stop()
 
 
 app = create_app()

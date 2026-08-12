@@ -997,3 +997,99 @@ def test_mcp_shim_unresolvable_engine_returns_none(isolated_env, monkeypatch):
     monkeypatch.setattr(shutil_mod, "which", lambda _: None)
     assert operations.install_mcp_shim() is None
     assert not (isolated_env / "bin" / "vetromar-mcp").exists()
+
+
+# -- meeting capture (detection status + record + settings) -------------------
+
+import vetromar.ui_server.app as app_mod
+
+
+def test_meetings_status_shape(client, monkeypatch):
+    monkeypatch.setattr(app_mod._MEETINGS, "_supported", False)
+    r = client.get("/api/meetings/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["supported"] is False
+    assert body["state"] == "idle"
+    assert body["candidate"] is None
+    assert body["job_id"] is None
+    assert body["enabled"] is True
+
+
+def test_meetings_record_unsupported_is_400(client, monkeypatch):
+    monkeypatch.setattr(app_mod._MEETINGS, "_supported", False)
+    r = client.post("/api/meetings/record", json={})
+    assert r.status_code == 400
+    assert "isn't available" in r.json()["detail"]
+
+
+def test_meetings_record_without_candidate_is_400(client, monkeypatch):
+    monkeypatch.setattr(app_mod._MEETINGS, "_supported", True)
+    r = client.post("/api/meetings/record", json={})
+    assert r.status_code == 400
+    assert "No meeting" in r.json()["detail"]
+
+
+def test_record_stop_accepts_meeting_record_job(client):
+    job = app_mod._JOBS.create("meeting-record", {"source": "meeting"})
+    r = client.post("/api/record/stop", json={"job_id": job.id})
+    assert r.status_code == 200
+    assert job.stop_event.is_set()
+
+
+def test_meeting_settings_roundtrip(client):
+    r = client.get("/api/settings/meetings")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is True
+    assert r.json()["grace_seconds"] == 20
+    r = client.post(
+        "/api/settings/meetings", json={"enabled": False, "grace_seconds": 40}
+    )
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+    again = client.get("/api/settings/meetings").json()
+    assert again["grace_seconds"] == 40 and again["enabled"] is False
+
+
+def test_meeting_settings_grace_minimum(client):
+    r = client.post("/api/settings/meetings", json={"enabled": True, "grace_seconds": 2})
+    assert r.status_code == 400
+
+
+# -- transcription tier settings (auto / local / cloud) -----------------------
+
+
+def test_transcription_settings_get_defaults(client):
+    body = client.get("/api/settings/transcription").json()
+    assert body["mode"] == "auto"
+    assert body["effective"] == "local"  # no Deepgram key in the isolated env
+    assert body["has_deepgram_key"] is False
+    assert body["local_models_present"] is False  # conftest isolates model caches
+
+
+def test_transcription_cloud_without_key_is_400(client):
+    r = client.post("/api/settings/transcription", json={"mode": "cloud"})
+    assert r.status_code == 400
+    assert "Deepgram" in r.json()["detail"]
+
+
+def test_transcription_local_persists_even_without_models(client):
+    r = client.post("/api/settings/transcription", json={"mode": "local"})
+    assert r.status_code == 200
+    assert r.json()["mode"] == "local"
+    assert r.json()["local_models_present"] is False  # the UI's download nudge
+    assert client.get("/api/settings/transcription").json()["effective"] == "local"
+
+
+def test_transcription_cloud_with_key_persists(client):
+    import vetromar.config as config_mod
+
+    config_mod.DEEPGRAM_CREDENTIALS_PATH.write_text("dg-key\n")  # tmp path (fixture)
+    r = client.post("/api/settings/transcription", json={"mode": "cloud"})
+    assert r.status_code == 200
+    assert r.json()["effective"] == "cloud"
+
+
+def test_transcription_bogus_mode_is_400(client):
+    r = client.post("/api/settings/transcription", json={"mode": "sideways"})
+    assert r.status_code == 400

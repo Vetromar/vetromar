@@ -59,34 +59,16 @@ class DeepgramBackend(TranscriptionBackend):
     def transcribe(
         self, audio_path: str | Path, progress: ProgressFn | None = None
     ) -> Transcript:
-        report: ProgressFn = progress or (lambda stage, pct: None)
-        audio_path = Path(audio_path)
-
-        report("Uploading audio", None)
-        body = audio_path.read_bytes()
-        content_type = mimetypes.guess_type(audio_path.name)[0] or "audio/wav"
-        params = urllib.parse.urlencode(
+        data = self._listen(
+            audio_path,
             {
                 "model": self.model,
                 "smart_format": "true",
                 "diarize": "true",
                 "utterances": "true",
-            }
+            },
+            progress,
         )
-        headers = {**self._auth_headers, "Content-Type": content_type}
-
-        report("Transcribing in cloud (Deepgram)", None)
-        try:
-            data = _request(
-                f"{self._listen_url}?{params}", body, headers, REQUEST_TIMEOUT_S
-            )
-        except urllib.error.HTTPError as exc:
-            raise self._map_http_error(exc) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise ConfigError(
-                f"Could not reach the transcription service ({exc}).",
-                hint="Check your connection, or set VETROMAR_TRANSCRIBE=local.",
-            ) from exc
 
         # Same construction as the local mapping in capture/transcribe.py:
         # SPEAKER_NN labels, int ms spans, empty-text utterances dropped.
@@ -107,6 +89,72 @@ class DeepgramBackend(TranscriptionBackend):
                 )
             )
         return Transcript(segments=segments)
+
+    def transcribe_multichannel(
+        self, audio_path: str | Path, progress: ProgressFn | None = None
+    ) -> Transcript:
+        """Meeting-recording variant: per-channel transcription, no diarization.
+
+        The stereo channels carry known parties (0 = mic/you, 1 = system/
+        others — see transcription/meeting.py), so the channel index IS the
+        speaker: `SPEAKER_00` / `SPEAKER_01`."""
+        data = self._listen(
+            audio_path,
+            {
+                "model": self.model,
+                "smart_format": "true",
+                "multichannel": "true",
+                "utterances": "true",
+            },
+            progress,
+        )
+
+        segments = []
+        for utt in data.get("results", {}).get("utterances", []) or []:
+            text = utt.get("transcript", "").strip()
+            if not text:
+                continue
+            channel = utt.get("channel")
+            segments.append(
+                TranscriptSegment(
+                    speaker=f"SPEAKER_{int(channel):02d}"
+                    if channel is not None
+                    else "SPEAKER_UNKNOWN",
+                    text=text,
+                    start_ms=int(utt["start"] * 1000),
+                    end_ms=int(utt["end"] * 1000),
+                )
+            )
+        segments.sort(key=lambda segment: (segment.start_ms, segment.end_ms))
+        return Transcript(segments=segments)
+
+    def _listen(
+        self,
+        audio_path: str | Path,
+        query: dict[str, str],
+        progress: ProgressFn | None,
+    ) -> dict:
+        report: ProgressFn = progress or (lambda stage, pct: None)
+        audio_path = Path(audio_path)
+
+        report("Uploading audio", None)
+        body = audio_path.read_bytes()
+        content_type = mimetypes.guess_type(audio_path.name)[0] or "audio/wav"
+        params = urllib.parse.urlencode(query)
+        headers = {**self._auth_headers, "Content-Type": content_type}
+
+        report("Transcribing in cloud (Deepgram)", None)
+        try:
+            return _request(
+                f"{self._listen_url}?{params}", body, headers, REQUEST_TIMEOUT_S
+            )
+        except urllib.error.HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise ConfigError(
+                f"Could not reach the transcription service ({exc}).",
+                hint="Check your connection, or set VETROMAR_TRANSCRIBE=local.",
+            ) from exc
 
     def _map_http_error(self, exc: urllib.error.HTTPError) -> Exception:
         if exc.code in (401, 403):

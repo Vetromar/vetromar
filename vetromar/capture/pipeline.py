@@ -13,6 +13,7 @@ from pathlib import Path
 
 from vetromar.capture.audio import import_audio
 from vetromar.config import Config
+from vetromar.errors import ConfigError
 from vetromar.extraction.base import make_backend
 from vetromar.extraction.repair import heal_grounded_quotes
 from vetromar.extraction.validate import validate_grounded_quotes
@@ -38,6 +39,7 @@ def run_pipeline(
     can show real progress — transcription is the long one and reports percent."""
     audio = import_audio(audio_path)
     transcript = make_transcription_backend(config).transcribe(audio, progress=progress)
+    _require_speech(transcript)
 
     # Persist the transcript next to the store; the episode's raw_ref points at it.
     transcript_path = config.db_path.parent / "transcripts" / f"{audio.stem}.json"
@@ -53,6 +55,19 @@ def run_pipeline(
         raw_ref=str(transcript_path),
         progress=progress,
     )
+
+
+def _require_speech(transcript: Transcript) -> None:
+    """Fail a capture of silence with a clear message instead of running
+    extraction on nothing (which surfaces as an opaque provider error)."""
+    if not transcript.segments:
+        raise ConfigError(
+            "No speech was detected in the recording, so there is nothing "
+            "to extract.",
+            hint="If people did talk, check the Microphone (and for meetings, "
+            "System Audio Recording) permission in System Settings → "
+            "Privacy & Security.",
+        )
 
 
 def run_from_transcript(

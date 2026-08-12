@@ -37,6 +37,21 @@
   let autoSyncSaved = $state(false);
   let autoSyncErr = $state(null);
 
+  // Transcription tier: an explicit Auto / Local / Deepgram choice.
+  let transcription = $state(null); // GET /api/settings/transcription snapshot
+  let transMode = $state("auto");
+  let transErr = $state(null);
+  let transSaved = $state(false);
+
+  // Meeting capture (detection toggle + grace) + launch-at-login.
+  let meetingSupported = $state(false);
+  let meetingEnabled = $state(true);
+  let meetingGrace = $state(20);
+  let meetingSaved = $state(false);
+  let meetingErr = $state(null);
+  const inTauri = typeof window !== "undefined" && !!window.__TAURI_INTERNALS__;
+  let autostartEnabled = $state(null); // null until read (Tauri only)
+
   const firstRun = $derived(!onBack);
   const backend = $derived(health?.backend);
   const models = $derived(health?.local_models);
@@ -62,7 +77,74 @@
     } catch {
       // section renders with blank defaults
     }
+    try {
+      transcription = await api.transcriptionGet();
+      transMode = transcription.mode;
+    } catch {
+      // section renders with defaults
+    }
+    try {
+      const m = await api.meetingSettingsGet();
+      meetingSupported = m.supported;
+      meetingEnabled = m.enabled;
+      meetingGrace = m.grace_seconds;
+    } catch {
+      // section renders with defaults
+    }
+    if (inTauri) {
+      try {
+        const { isEnabled } = await import("@tauri-apps/plugin-autostart");
+        autostartEnabled = await isEnabled();
+      } catch {
+        autostartEnabled = null; // hide the toggle if the plugin misbehaves
+      }
+    }
   });
+
+  async function saveTranscription(mode) {
+    transErr = null;
+    transSaved = false;
+    const previous = transMode;
+    transMode = mode;
+    try {
+      transcription = await api.transcriptionSave(mode);
+      transMode = transcription.mode;
+      transSaved = true;
+      onChanged?.();
+    } catch (e) {
+      transMode = previous;
+      transErr = e.message;
+    }
+  }
+
+  async function saveMeetingSettings() {
+    meetingErr = null;
+    meetingSaved = false;
+    try {
+      const m = await api.meetingSettingsSave({
+        enabled: meetingEnabled,
+        grace_seconds: Number(meetingGrace),
+      });
+      meetingEnabled = m.enabled;
+      meetingGrace = m.grace_seconds;
+      meetingSaved = true;
+    } catch (e) {
+      meetingErr = e.message;
+    }
+  }
+
+  async function toggleAutostart() {
+    try {
+      const { enable, disable, isEnabled } = await import(
+        "@tauri-apps/plugin-autostart"
+      );
+      if (await isEnabled()) await disable();
+      else await enable();
+      autostartEnabled = await isEnabled();
+    } catch (e) {
+      meetingErr = e.message;
+    }
+  }
 
   async function saveProvider() {
     providerBusy = true;
@@ -243,14 +325,51 @@
   </div>
 
   <div class="stack" style="margin-top: 8px">
-    <h3>Fast transcription <span class="muted">(optional)</span></h3>
+    <h3>Transcription</h3>
     <p class="muted">
-      Add your own Deepgram API key to transcribe recordings in seconds
-      (audio is uploaded to Deepgram). Without one, transcription runs
-      locally on this machine.
+      How recordings become text. <strong>Local</strong> runs on this machine
+      (private, slower). <strong>Deepgram</strong> uploads audio to Deepgram
+      and returns in seconds — meeting captures transcribe both sides of the
+      call, which bills both channels.
     </p>
+    <div class="row" style="gap: 8px">
+      <button
+        class="pill"
+        class:active-pill={transMode === "auto"}
+        onclick={() => saveTranscription("auto")}
+      >
+        Auto
+      </button>
+      <button
+        class="pill"
+        class:active-pill={transMode === "local"}
+        onclick={() => saveTranscription("local")}
+      >
+        Always local
+      </button>
+      <button
+        class="pill"
+        class:active-pill={transMode === "cloud"}
+        onclick={() => saveTranscription("cloud")}
+      >
+        Always Deepgram
+      </button>
+      {#if transSaved}<span class="muted">✓ Saved</span>{/if}
+    </div>
+    {#if transcription}
+      <p class="muted" style="font-size: 13px">
+        {#if transMode === "auto"}
+          Auto uses Deepgram when a key is saved, local otherwise — right now:
+          <strong>{transcription.effective === "cloud" ? "Deepgram" : "local"}</strong>.
+        {:else if transMode === "local" && !transcription.local_models_present}
+          Local models aren't downloaded yet — grab them below or captures
+          will fail.
+        {/if}
+      </p>
+    {/if}
+    {#if transErr}<p class="error">{transErr}</p>{/if}
     {#if provider?.has_deepgram_key}
-      <p class="muted">✓ A Deepgram key is configured — cloud transcription is on.</p>
+      <p class="muted">✓ A Deepgram key is saved.</p>
     {/if}
     <div class="row" style="gap: 8px; align-items: center">
       <input
@@ -269,6 +388,56 @@
       {#if deepgramSaved}<span class="muted">✓ Saved</span>{/if}
     </div>
     {#if deepgramErr}<p class="error">{deepgramErr}</p>{/if}
+  </div>
+
+  <div class="stack" style="margin-top: 8px">
+    <h3>Meeting capture</h3>
+    <p class="muted">
+      Vetromar can notice when Zoom, Teams, or your browser starts using the
+      microphone and offer to record the meeting — your mic plus the
+      meeting's own audio. Detection only notifies; recording never starts
+      without your click.
+    </p>
+    {#if !meetingSupported}
+      <p class="muted">
+        Not available here — meeting capture needs the desktop app on macOS
+        14.2 or newer.
+      </p>
+    {:else}
+      <label class="row" style="gap:8px; cursor:pointer">
+        <input type="checkbox" bind:checked={meetingEnabled} />
+        Watch for meetings (Zoom, Teams, Chrome, Safari, Arc, Edge)
+      </label>
+      <div>
+        <label class="field-label" for="meeting-grace">
+          Auto-stop after the meeting ends (seconds)
+        </label>
+        <input
+          id="meeting-grace"
+          type="number"
+          min="5"
+          step="5"
+          bind:value={meetingGrace}
+          disabled={!meetingEnabled}
+          style="max-width:120px"
+        />
+      </div>
+      <div class="row">
+        <button class="primary" onclick={saveMeetingSettings}>Save</button>
+        {#if meetingSaved}<span class="muted">✓ Saved</span>{/if}
+      </div>
+    {/if}
+    {#if inTauri && autostartEnabled !== null}
+      <label class="row" style="gap:8px; cursor:pointer">
+        <input
+          type="checkbox"
+          checked={autostartEnabled}
+          onchange={toggleAutostart}
+        />
+        Launch Vetromar at login (runs in the menu bar)
+      </label>
+    {/if}
+    {#if meetingErr}<p class="error">{meetingErr}</p>{/if}
   </div>
 
   <div class="stack" style="margin-top: 8px">

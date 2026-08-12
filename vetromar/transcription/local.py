@@ -20,9 +20,7 @@ class LocalWhisperXBackend(TranscriptionBackend):
     def __init__(self, config: Config):
         self._config = config
 
-    def transcribe(
-        self, audio_path: str | Path, progress: ProgressFn | None = None
-    ) -> Transcript:
+    def ensure_models_present(self) -> None:
         # Model downloads are explicit (Settings → Download local models) —
         # never let a capture kick off a silent multi-GB fetch. Non-English
         # alignment models are the accepted exception: they still lazy-load
@@ -40,4 +38,9 @@ class LocalWhisperXBackend(TranscriptionBackend):
                 hint="Open Settings → Download local models (~8 GB), or subscribe "
                 "to use cloud transcription.",
             )
+
+    def transcribe(
+        self, audio_path: str | Path, progress: ProgressFn | None = None
+    ) -> Transcript:
+        self.ensure_models_present()
         return transcribe_and_diarize(audio_path, self._config, progress=progress)
