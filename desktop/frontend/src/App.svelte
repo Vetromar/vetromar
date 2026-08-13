@@ -11,10 +11,11 @@
   import Sources from "./lib/Sources.svelte";
   import Graphs from "./lib/Graphs.svelte";
   import Logo from "./lib/Logo.svelte";
+  import HomeCity from "./lib/HomeCity.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import GettingStarted from "./lib/GettingStarted.svelte";
 
-  let view = $state("loading"); // loading | setup | capture | knowledge | sources | graphs
+  let view = $state("loading"); // loading | setup | home | capture | knowledge | sources | graphs
   let health = $state(null);
   let loadError = $state(null);
   let onboarding = $state(null); // GET /api/onboarding snapshot
@@ -28,7 +29,7 @@
       loadError = null;
       health = await api.health();
       if (gotoSetup) view = "setup";
-      else if (view === "loading") view = health.ready ? "capture" : "setup";
+      else if (view === "loading") view = health.ready ? "home" : "setup";
       await refreshOnboarding();
       maybeOpenTour();
     } catch (e) {
@@ -80,13 +81,24 @@
   });
 
   function onSetupDone() {
-    view = "capture";
+    view = "home";
     refresh();
   }
 
   const inApp = $derived(
-    view === "capture" || view === "knowledge" || view === "sources" || view === "graphs"
+    view === "home" ||
+      view === "capture" ||
+      view === "knowledge" ||
+      view === "sources" ||
+      view === "graphs"
   );
+
+  // Prism ids map 1:1 onto views, except Settings which goes through the
+  // same fresh-health path as the header Settings button.
+  function goFromHome(id) {
+    if (id === "setup") refresh({ gotoSetup: true });
+    else view = id;
+  }
 
   // Relaunching mid-job would kill a live sync/capture AND risk the swapped
   // bundle's lazy-loaded files under the still-running sidecar — hold it.
@@ -153,6 +165,7 @@
       {#if newGraphErr}<span class="error">{newGraphErr}</span>{/if}
     </div>
     <nav class="tabs">
+      <button class:active={view === "home"} onclick={() => (view = "home")}>Home</button>
       <button class:active={view === "capture"} onclick={() => (view = "capture")}>Capture</button>
       <button class:active={view === "knowledge"} onclick={() => (view = "knowledge")}>Knowledge</button>
       <button class:active={view === "sources"} onclick={() => (view = "sources")}>Sources</button>
@@ -212,7 +225,7 @@
       {health}
       onDone={onSetupDone}
       onChanged={() => refresh()}
-      onBack={() => (view = "capture")}
+      onBack={() => (view = "home")}
       onReplayTour={health?.ready
         ? () => {
             view = "capture";
@@ -236,6 +249,10 @@
     <Graphs />
   {/if}
 </main>
+
+{#if view === "home"}
+  <HomeCity onNavigate={goFromHome} />
+{/if}
 
 {#if tourOpen}
   <Onboarding onClose={closeTour} onNavigate={tourNavigate} />
