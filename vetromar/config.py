@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-VETROMAR_HOME = Path.home() / ".vetromar"
+# The whole app home is env-overridable so multiple isolated instances can run
+# on one machine (multi-graph verification, scratch "devices"). Set it before
+# import — every path constant below derives from it at module load.
+VETROMAR_HOME = Path(os.environ.get("VETROMAR_HOME", str(Path.home() / ".vetromar")))
 DEFAULT_DB_PATH = VETROMAR_HOME / "store.db"
 DEFAULT_RUNTIME_DIR = VETROMAR_HOME / "runtime"
 DEFAULT_CONFIG_PATH = VETROMAR_HOME / "config.toml"

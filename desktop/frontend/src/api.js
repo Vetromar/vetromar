@@ -41,6 +41,15 @@ function qs(params = {}) {
   return entries.length ? "?" + new URLSearchParams(entries) : "";
 }
 
+// The active graph (header switcher). null/"private" → the private graph;
+// every store read and content-entry call below carries it automatically, so
+// switching graphs re-scopes the whole app without touching call sites.
+let activeGraph = null;
+export function setApiGraph(id) {
+  activeGraph = !id || id === "private" ? null : id;
+}
+const withGraph = (params = {}) => ({ graph: activeGraph, ...params });
+
 export const api = {
   health: () => request("/api/health"),
   setupCloud: () => request("/api/setup/cloud", { method: "POST" }),
@@ -51,6 +60,7 @@ export const api = {
     fd.append("file", file);
     fd.append("title", title);
     if (when) fd.append("when", when);
+    if (activeGraph) fd.append("graph", activeGraph);
     return request("/api/capture", { method: "POST", body: fd });
   },
   uploadDocument(file, title, when) {
@@ -58,9 +68,11 @@ export const api = {
     fd.append("file", file);
     fd.append("title", title || "");
     if (when) fd.append("when", when);
+    if (activeGraph) fd.append("graph", activeGraph);
     return request("/api/documents", { method: "POST", body: fd });
   },
-  recordStart: (title, when) => jsonPost("/api/record/start", { title, when: when || null }),
+  recordStart: (title, when) =>
+    jsonPost("/api/record/start", { title, when: when || null, graph: activeGraph }),
   recordStop: (job_id) => jsonPost("/api/record/stop", { job_id }),
   // Virtual-meeting capture (detection + one-click record)
   meetingsStatus: () => request("/api/meetings/status"),
@@ -107,18 +119,26 @@ export const api = {
   sourcesTest: (name) => request("/api/sources/" + name + "/test", { method: "POST" }),
   sourcesRemove: (name) => request("/api/sources/" + name, { method: "DELETE" }),
   sourcesSync: (name, opts = {}) => jsonPost("/api/sources/" + name + "/sync", opts),
-  // Store browsing (read-only)
-  storeSearch: (params) => request("/api/store/search" + qs(params)),
-  storeUnit: (id) => request("/api/store/units/" + id),
-  storeEpisodes: () => request("/api/store/episodes"),
+  // Graphs (private + shared; the header switcher scopes everything above)
+  graphsList: () => request("/api/graphs"),
+  graphsCreate: (name) => jsonPost("/api/graphs", { name }),
+  graphsRemove: (id, deleteFiles = false) =>
+    request("/api/graphs/" + id + qs({ delete_files: deleteFiles }), { method: "DELETE" }),
+  graphNote: (graphId, text, title) =>
+    jsonPost("/api/graphs/" + graphId + "/note", { text, title: title || null }),
+  // Store browsing (read-only; scoped to the active graph)
+  storeSearch: (params) => request("/api/store/search" + qs(withGraph(params))),
+  storeUnit: (id) => request("/api/store/units/" + id + qs(withGraph())),
+  storeEpisodes: () => request("/api/store/episodes" + qs(withGraph())),
   storeEpisode: (id, includeRaw = false) =>
-    request("/api/store/episodes/" + id + qs({ include_raw: includeRaw })),
+    request("/api/store/episodes/" + id + qs(withGraph({ include_raw: includeRaw }))),
   storeEpisodeRename: (id, title) =>
-    jsonPost("/api/store/episodes/" + id + "/rename", { title }),
-  storeEntities: (type) => request("/api/store/entities" + qs({ type })),
-  storeEntityUnits: (id) => request("/api/store/entities/" + id + "/units"),
-  storeCurrent: (entityId) => request("/api/store/current" + qs({ entity_id: entityId })),
-  storeGraph: () => request("/api/store/graph"),
+    jsonPost("/api/store/episodes/" + id + "/rename" + qs(withGraph()), { title }),
+  storeEntities: (type) => request("/api/store/entities" + qs(withGraph({ type }))),
+  storeEntityUnits: (id) => request("/api/store/entities/" + id + "/units" + qs(withGraph())),
+  storeCurrent: (entityId) =>
+    request("/api/store/current" + qs(withGraph({ entity_id: entityId }))),
+  storeGraph: () => request("/api/store/graph" + qs(withGraph())),
 };
 
 // Poll a job to completion, calling onUpdate with each snapshot.

@@ -29,6 +29,16 @@ def _no_ambient_workspace_session(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_graph_registry(monkeypatch, tmp_path):
+    """Tests must never read or write the real ~/.vetromar/graphs.json —
+    the multi-graph registry is machine state, same hazard class as the
+    workspace session above. Both paths are call-time env-resolved
+    (graphs.registry_path / graphs_root) precisely so this works."""
+    monkeypatch.setenv("VETROMAR_GRAPHS_REGISTRY", str(tmp_path / "graphs.json"))
+    monkeypatch.setenv("VETROMAR_GRAPHS_DIR", str(tmp_path / "graphs"))
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_signup_notify(monkeypatch):
     """CLOUD_SIGNUP_NOTIFY_EMAIL set in the ambient env would make every
     cloud signup in tests send an operator-notification email, breaking the

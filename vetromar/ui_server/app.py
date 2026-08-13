@@ -11,6 +11,7 @@ its own `Store` inside its worker thread.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import socket
 import sys
@@ -22,9 +23,10 @@ from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from vetromar import operations, views
-from vetromar.config import load_config, save_config
+from vetromar import graphs, operations, views
+from vetromar.config import VETROMAR_HOME, load_config, save_config
 from vetromar.errors import ConfigError
+from vetromar.graphs import GraphError
 from vetromar.store import Store, StoreError
 from vetromar.ui_server.jobs import Job, JobRegistry
 
@@ -34,6 +36,7 @@ _JOBS = JobRegistry()
 class RecordStart(BaseModel):
     title: str = ""  # empty → auto-generated date/time title
     when: Optional[str] = None
+    graph: Optional[str] = None  # destination graph; None → private
 
 
 class RecordStop(BaseModel):
@@ -116,6 +119,15 @@ class ServerUrl(BaseModel):
     url: str
 
 
+class GraphCreate(BaseModel):
+    name: str
+
+
+class NoteCreate(BaseModel):
+    text: str
+    title: Optional[str] = None
+
+
 def _config_http(exc: ConfigError, status: int = 400) -> HTTPException:
     detail = exc.message if exc.hint is None else f"{exc.message} {exc.hint}"
     return HTTPException(status_code=status, detail=detail)
@@ -136,13 +148,33 @@ def _pipeline_payload(episode, units, markdown: str) -> dict:
     }
 
 
-def _with_store(fn):
+def _graph_db_path(graph: Optional[str]) -> Path:
+    """graph id (query/body param) → the store's db path. None → private.
+    Unknown graphs 404 — the id came from the frontend's registry list."""
+    try:
+        return graphs.resolve_db_path(graph)
+    except GraphError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+def _graph_meta(graph: Optional[str]) -> dict:
+    """Job meta labeling: which graph a job writes into, for UI badges."""
+    graph_id = graph or graphs.PRIVATE_GRAPH_ID
+    try:
+        name = graphs.get_graph(graph_id).name
+    except GraphError:
+        name = graph_id
+    return {"graph": graph_id, "graph_name": name}
+
+
+def _with_store(fn, graph: Optional[str] = None):
     """Run a read against a fresh Store (FastAPI sync routes run in a thread
-    pool and SQLite is thread-bound — same reasoning as jobs.py). Unknown ids
-    (StoreError) become 404s."""
-    config = load_config()
-    config.ensure_dirs()
-    store = Store(config.db_path)
+    pool and SQLite is thread-bound — same reasoning as jobs.py). `graph`
+    selects which graph's store; default private. Unknown ids (StoreError)
+    become 404s."""
+    db_path = _graph_db_path(graph)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    store = Store(db_path)
     try:
         return fn(store)
     except StoreError as exc:
@@ -151,14 +183,26 @@ def _with_store(fn):
         store.close()
 
 
-def _run_pipeline_on(job: Job, audio_path: Path, title: str, when: datetime) -> dict:
+def _graph_config(db_path: Optional[Path]):
+    """Worker-side config: `db_path` (resolved at route time — never re-derive
+    the graph inside a worker thread) overrides the private store so every
+    blob dir (transcripts/, uploads/, ...) derives per-graph."""
+    config = load_config()
+    if db_path is not None:
+        config = dataclasses.replace(config, db_path=db_path)
+    config.ensure_dirs()
+    return config
+
+
+def _run_pipeline_on(
+    job: Job, audio_path: Path, title: str, when: datetime, db_path: Optional[Path] = None
+) -> dict:
     """Shared tail of capture + record: prep backend, run the pipeline, package.
 
     Opens the Store inside the worker thread (SQLite is thread-bound)."""
     from vetromar.capture.pipeline import run_pipeline
 
-    config = load_config()
-    config.ensure_dirs()
+    config = _graph_config(db_path)
     operations.ensure_backend_ready(config)
     job.set_stage("Preparing", None)
     store = Store(config.db_path)
@@ -177,13 +221,14 @@ def _run_pipeline_on(job: Job, audio_path: Path, title: str, when: datetime) -> 
     return _pipeline_payload(episode, units, markdown)
 
 
-def _run_meeting_pipeline_on(job: Job, audio_path: Path, title: str, when: datetime) -> dict:
+def _run_meeting_pipeline_on(
+    job: Job, audio_path: Path, title: str, when: datetime, db_path: Optional[Path] = None
+) -> dict:
     """The meeting-record tail: channel-aware transcription, then the same
     stages as _run_pipeline_on. Same thread rules (fresh Store per worker)."""
     from vetromar.capture.meeting import run_meeting_pipeline
 
-    config = load_config()
-    config.ensure_dirs()
+    config = _graph_config(db_path)
     operations.ensure_backend_ready(config)
     job.set_stage("Preparing", None)
     store = Store(config.db_path)
@@ -362,20 +407,22 @@ def create_app() -> FastAPI:
         file: UploadFile,
         title: str = Form(""),
         when: Optional[str] = Form(None),
+        graph: Optional[str] = Form(None),
     ) -> dict:
         occurred_at = _parse_when(when)
         title = title.strip() or operations.default_meeting_title(occurred_at)
-        config = load_config()
-        config.ensure_dirs()
+        # Destination graph resolves NOW — blob dirs derive from the store's
+        # parent, so the file must land in the right graph before any work.
+        db_path = _graph_db_path(graph)
         # Persist the upload with its original suffix so import_audio accepts it.
         suffix = Path(file.filename or "upload").suffix or ".wav"
-        uploads = config.db_path.parent / "uploads"
+        uploads = db_path.parent / "uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         dest = uploads / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}{suffix}"
         dest.write_bytes(await file.read())
 
-        job = _JOBS.create("capture")
-        _JOBS.start(job, lambda j: _run_pipeline_on(j, dest, title, occurred_at))
+        job = _JOBS.create("capture", meta=_graph_meta(graph))
+        _JOBS.start(job, lambda j: _run_pipeline_on(j, dest, title, occurred_at, db_path))
         return {"job_id": job.id}
 
     @app.post("/api/documents")
@@ -383,10 +430,10 @@ def create_app() -> FastAPI:
         file: UploadFile,
         title: str = Form(""),
         when: Optional[str] = Form(None),
+        graph: Optional[str] = Form(None),
     ) -> dict:
         occurred_at = _parse_when(when)
-        config = load_config()
-        config.ensure_dirs()
+        db_path = _graph_db_path(graph)
         # Persist with the original suffix — the parser dispatches on it.
         suffix = Path(file.filename or "upload").suffix.lower()
         from vetromar.ingest.documents import SUPPORTED_SUFFIXES
@@ -397,13 +444,14 @@ def create_app() -> FastAPI:
                 detail=f"Unsupported document type {suffix or '(none)'} — "
                 f"supported: {', '.join(SUPPORTED_SUFFIXES)}",
             )
-        documents_dir = config.db_path.parent / "documents"
+        documents_dir = db_path.parent / "documents"
         documents_dir.mkdir(parents=True, exist_ok=True)
         dest = documents_dir / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}{suffix}"
         dest.write_bytes(await file.read())
         doc_title = title.strip() or Path(file.filename or dest.name).stem
 
         def target(job: Job) -> dict:
+            config = _graph_config(db_path)
             store = Store(config.db_path)  # jobs open their own Store
             try:
                 job.log(f"parsing {dest.name}")
@@ -424,7 +472,7 @@ def create_app() -> FastAPI:
             finally:
                 store.close()
 
-        job = _JOBS.create("document")
+        job = _JOBS.create("document", meta=_graph_meta(graph))
         _JOBS.start(job, target)
         return {"job_id": job.id}
 
@@ -432,13 +480,13 @@ def create_app() -> FastAPI:
     def record_start(body: RecordStart) -> dict:
         occurred_at = _parse_when(body.when)
         title = body.title.strip() or operations.default_meeting_title(occurred_at)
-        config = load_config()
-        config.ensure_dirs()
+        db_path = _graph_db_path(body.graph)
         out_path = (
-            config.db_path.parent
+            db_path.parent
             / "recordings"
             / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.wav"
         )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         def target(job: Job) -> dict:
             from vetromar.capture.audio import record_mic
@@ -447,9 +495,9 @@ def create_app() -> FastAPI:
             job.log("recording — press Stop when done")
             audio = record_mic(out_path, stop_event=job.stop_event)
             job.status = "running"
-            return _run_pipeline_on(job, audio, title, occurred_at)
+            return _run_pipeline_on(job, audio, title, occurred_at, db_path)
 
-        job = _JOBS.create("record")
+        job = _JOBS.create("record", meta=_graph_meta(body.graph))
         _JOBS.start(job, target)
         return {"job_id": job.id}
 
@@ -913,6 +961,47 @@ def create_app() -> FastAPI:
         # the UI attaches to it instead of double-syncing.
         return {"job_id": job.id, "already_running": not started}
 
+    # -- graphs (the multi-graph surface: private + shared; registry in ------
+    # -- vetromar/graphs.py) ---------------------------------------------------
+
+    @app.get("/api/graphs")
+    def graphs_list() -> list[dict]:
+        return [g.to_dict() for g in graphs.list_graphs()]
+
+    @app.post("/api/graphs")
+    def graphs_create(body: GraphCreate) -> dict:
+        try:
+            info = graphs.create_graph(body.name)
+        except GraphError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        # Touch the store so the graph is queryable immediately (migrations run).
+        _with_store(lambda s: None, graph=info.id)
+        return info.to_dict()
+
+    @app.delete("/api/graphs/{graph_id}")
+    def graphs_remove(graph_id: str, delete_files: bool = False) -> dict:
+        try:
+            graphs.remove_graph(graph_id, delete_files=delete_files)
+        except GraphError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"ok": True}
+
+    @app.post("/api/graphs/{graph_id}/note")
+    def graphs_note(graph_id: str, body: NoteCreate) -> dict:
+        from vetromar.ingest.notes import add_quick_note
+
+        if not body.text.strip():
+            raise HTTPException(status_code=400, detail="Note text cannot be empty.")
+
+        def write(store: Store) -> dict:
+            episode, unit = add_quick_note(store, body.text, title=body.title)
+            return {
+                "episode": views.episode_dict(episode),
+                "unit": json.loads(unit.model_dump_json()),
+            }
+
+        return _with_store(write, graph=graph_id)
+
     # -- store browsing (same payloads as the MCP read tools; the lone
     # mutation is the episode-title rename — units stay read-only) ------------
 
@@ -926,6 +1015,7 @@ def create_app() -> FastAPI:
         current_only: bool = False,
         as_of: Optional[str] = None,
         k: int = 25,
+        graph: Optional[str] = None,
     ) -> list[dict]:
         return _with_store(
             lambda s: views.search_units(
@@ -939,85 +1029,108 @@ def create_app() -> FastAPI:
                 as_of=as_of,
                 k=k,
                 with_labels=True,
-            )
+            ),
+            graph=graph,
         )
 
     @app.get("/api/store/units/{unit_id}")
-    def store_unit(unit_id: str) -> dict:
+    def store_unit(unit_id: str, graph: Optional[str] = None) -> dict:
         return _with_store(
-            lambda s: views.unit_payload(s, s.get_unit(unit_id), with_labels=True)
+            lambda s: views.unit_payload(s, s.get_unit(unit_id), with_labels=True),
+            graph=graph,
         )
 
     @app.get("/api/store/episodes")
-    def store_episodes(limit: Optional[int] = None, offset: int = 0) -> list[dict]:
+    def store_episodes(
+        limit: Optional[int] = None, offset: int = 0, graph: Optional[str] = None
+    ) -> list[dict]:
         return _with_store(
             lambda s: [
                 views.episode_dict(e)
                 for e in s.list_episodes(limit=limit, offset=offset)
-            ]
+            ],
+            graph=graph,
         )
 
     @app.get("/api/store/episodes/{episode_id}")
-    def store_episode(episode_id: str, include_raw: bool = False) -> dict:
+    def store_episode(
+        episode_id: str, include_raw: bool = False, graph: Optional[str] = None
+    ) -> dict:
         return _with_store(
-            lambda s: views.episode_detail(s, episode_id, include_raw=include_raw)
+            lambda s: views.episode_detail(s, episode_id, include_raw=include_raw),
+            graph=graph,
         )
 
     @app.post("/api/store/episodes/{episode_id}/rename")
-    def store_episode_rename(episode_id: str, body: EpisodeRename) -> dict:
+    def store_episode_rename(
+        episode_id: str, body: EpisodeRename, graph: Optional[str] = None
+    ) -> dict:
         title = body.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="Title cannot be empty.")
         return _with_store(
-            lambda s: views.episode_dict(s.rename_episode(episode_id, title))
+            lambda s: views.episode_dict(s.rename_episode(episode_id, title)),
+            graph=graph,
         )
 
     @app.get("/api/store/entities")
     def store_entities(
-        type: Optional[str] = None, limit: Optional[int] = None, offset: int = 0
+        type: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        graph: Optional[str] = None,
     ) -> list[dict]:
         return _with_store(
             lambda s: [
                 json.loads(e.model_dump_json())
                 for e in s.list_entities(type=type, limit=limit, offset=offset)
-            ]
+            ],
+            graph=graph,
         )
 
     @app.get("/api/store/entities/{entity_id}/units")
-    def store_entity_units(entity_id: str) -> list[dict]:
+    def store_entity_units(entity_id: str, graph: Optional[str] = None) -> list[dict]:
         return _with_store(
             lambda s: [
                 views.unit_payload(s, u, with_labels=True)
                 for u in s.units_by_entity(entity_id)
-            ]
+            ],
+            graph=graph,
         )
 
     @app.get("/api/store/context")
     def store_context(
-        query: str, token_budget: int = 2000, as_of: Optional[str] = None
+        query: str,
+        token_budget: int = 2000,
+        as_of: Optional[str] = None,
+        graph: Optional[str] = None,
     ) -> dict:
         from vetromar.context import build_context
 
         return _with_store(
             lambda s: build_context(
                 s, query, token_budget=token_budget, as_of=views.parse_as_of(as_of)
-            )
+            ),
+            graph=graph,
         )
 
     @app.post("/api/store/dedupe")
-    def store_dedupe() -> dict:
+    def store_dedupe(graph: Optional[str] = None) -> dict:
         """Merge duplicate entities (redirect-based, history preserved). One
-        global run at a time — a second click attaches to the running job."""
+        run at a time per graph — a second click attaches to the running job."""
+        graph_id = graph or graphs.PRIVATE_GRAPH_ID
+        db_path = _graph_db_path(graph)
         job, started = _JOBS.create_sync_unless_active(
-            "entity-dedupe", {"source": "entity-dedupe"}, kind="dedupe"
+            f"entity-dedupe:{graph_id}",
+            {"source": f"entity-dedupe:{graph_id}", **_graph_meta(graph)},
+            kind="dedupe",
         )
         if started:
 
             def target(job: Job) -> dict:
                 from vetromar.linking.dedupe import dedupe_entities
 
-                config = load_config()
-                config.ensure_dirs()
+                config = _graph_config(db_path)
                 store = Store(config.db_path)  # jobs open their own Store
                 try:
                     report = dedupe_entities(store, config)
@@ -1033,15 +1146,19 @@ def create_app() -> FastAPI:
         return {"job_id": job.id, "already_running": not started}
 
     @app.get("/api/store/current")
-    def store_current(entity_id: Optional[str] = None) -> dict:
-        return _with_store(lambda s: views.current_state(s, entity_id))
+    def store_current(entity_id: Optional[str] = None, graph: Optional[str] = None) -> dict:
+        return _with_store(lambda s: views.current_state(s, entity_id), graph=graph)
 
     @app.get("/api/store/graph")
     def store_graph(
-        seed: Optional[str] = None, hops: int = 2, limit: int = 500
+        seed: Optional[str] = None,
+        hops: int = 2,
+        limit: int = 500,
+        graph: Optional[str] = None,
     ) -> dict:
         return _with_store(
-            lambda s: views.graph(s, seed=seed, hops=hops, limit=limit)
+            lambda s: views.graph(s, seed=seed, hops=hops, limit=limit),
+            graph=graph,
         )
 
     _mount_frontend(app)
@@ -1100,7 +1217,7 @@ def run_server(host: str = "127.0.0.1", port: int = 0) -> None:
         import logging
         from logging.handlers import RotatingFileHandler
 
-        log_path = Path.home() / ".vetromar" / "logs" / "sidecar.log"
+        log_path = VETROMAR_HOME / "logs" / "sidecar.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
         handler.setFormatter(

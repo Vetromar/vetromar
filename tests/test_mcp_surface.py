@@ -52,7 +52,7 @@ def test_write_surface_is_exactly_the_allowlist():
 
 
 def test_get_unit_carries_provenance_and_edges(store, monkeypatch):
-    monkeypatch.setattr(srv, "_get_store", lambda: store)
+    monkeypatch.setattr(srv, "_get_store", lambda graph=None: store)
     room_unit, ticket = _seed(store)
 
     payload = srv.get_unit(room_unit.id)
@@ -67,7 +67,7 @@ def test_get_unit_carries_provenance_and_edges(store, monkeypatch):
 
 
 def test_search_and_episode_tools(store, monkeypatch):
-    monkeypatch.setattr(srv, "_get_store", lambda: store)
+    monkeypatch.setattr(srv, "_get_store", lambda graph=None: store)
     room_unit, ticket = _seed(store)
 
     # ranked text search + post-filter: both units mention 'monolith'; method
@@ -93,7 +93,7 @@ def test_search_and_episode_tools(store, monkeypatch):
 
 
 def test_entity_tools(store, monkeypatch):
-    monkeypatch.setattr(srv, "_get_store", lambda: store)
+    monkeypatch.setattr(srv, "_get_store", lambda graph=None: store)
     room_unit, _ = _seed(store)
     priya = create_entity(store, "Priya")
     link_alias(store, priya.id, "SPEAKER_02")

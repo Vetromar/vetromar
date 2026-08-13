@@ -1,9 +1,15 @@
 <script>
   import { api } from "../api.js";
   import { captureJob } from "./jobs.svelte.js";
+  import { graphsStore } from "./graphs.svelte.js";
   import Results from "./Results.svelte";
 
   let { backend } = $props();
+
+  // Everything on this tab lands in the active graph (the header switcher) —
+  // except auto-detected meeting capture, which stays private for now.
+  const activeGraph = $derived(graphsStore.active);
+  const sharedActive = $derived(activeGraph && activeGraph.kind !== "private");
 
   let title = $state("");
   let file = $state(null); // chosen audio file — selected, not yet processed
@@ -123,12 +129,36 @@
       localErr = e.message;
     }
   }
+
+  // Quick note — the lightest entry path; no AI, lands instantly.
+  let noteText = $state("");
+  let noteBusy = $state(false);
+  let noteErr = $state(null);
+  let noteSaved = $state(null); // episode title of the last saved note
+
+  async function saveNote() {
+    const text = noteText.trim();
+    if (!text || noteBusy) return;
+    noteBusy = true;
+    noteErr = null;
+    noteSaved = null;
+    try {
+      const saved = await api.graphNote(graphsStore.activeId, text);
+      noteSaved = saved.episode.title;
+      noteText = "";
+    } catch (e) {
+      noteErr = e.message;
+    } finally {
+      noteBusy = false;
+    }
+  }
 </script>
 
 <div class="card stack">
   <h2 class="display">Capture a meeting</h2>
   <p class="muted">
     Import an audio file or record live, then Vetromar ingests the information.
+    {#if sharedActive}Everything here lands in <strong>{activeGraph.name}</strong>.{/if}
   </p>
 
   <div>
@@ -148,6 +178,7 @@
         <strong>{meeting.candidate.name} is using the microphone</strong>
         <p class="muted" style="margin:2px 0 0; font-size:13px">
           Capture both sides of the call — your mic plus the meeting's audio.
+          {#if sharedActive}Meeting captures land in My graph for now.{/if}
         </p>
       </div>
       <button class="primary" onclick={startMeetingRecord}>
@@ -238,6 +269,29 @@
 {#if result}
   <Results {result} />
 {/if}
+
+<div class="card stack" style="margin-top:16px">
+  <h3 class="display" style="margin:0">Quick note</h3>
+  <p class="muted" style="margin:0">
+    Type or paste something worth keeping — it lands in
+    <strong>{activeGraph?.name ?? "My graph"}</strong> instantly, no processing.
+  </p>
+  <textarea
+    rows="3"
+    placeholder="e.g. Mo switched the prototype to Godot after the physics demo…"
+    bind:value={noteText}
+    onkeydown={(e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveNote();
+    }}
+  ></textarea>
+  <div class="row spread">
+    <button class="primary" disabled={!noteText.trim() || noteBusy} onclick={saveNote}>
+      {noteBusy ? "Saving…" : "Save note"}
+    </button>
+    {#if noteSaved}<span class="muted" style="font-size:13px">Saved: “{noteSaved}”</span>{/if}
+  </div>
+  {#if noteErr}<p class="error">{noteErr}</p>{/if}
+</div>
 
 <style>
   .meeting-banner {

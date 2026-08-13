@@ -133,7 +133,7 @@ def test_cli_ingest_wires_episode_and_extraction(tmp_path, monkeypatch):
 
 
 def test_mcp_write_tools_round_trip(store, monkeypatch):
-    monkeypatch.setattr(srv, "_get_store", lambda: store)
+    monkeypatch.setattr(srv, "_get_store", lambda graph=None: store)
     # Hermetic: never read the real ~/.vetromar config (whose api key would
     # turn auto-linking into live LLM calls inside a test).
     monkeypatch.setattr(srv, "load_config", lambda: Config(backend="local"))
@@ -164,7 +164,7 @@ def test_mcp_write_tools_round_trip(store, monkeypatch):
 
 
 def test_mcp_add_units_gate_failure_names_offender(store, monkeypatch):
-    monkeypatch.setattr(srv, "_get_store", lambda: store)
+    monkeypatch.setattr(srv, "_get_store", lambda graph=None: store)
     ep = srv.ingest_episode(title="T", source_kind="chat", raw=RAW)
 
     with pytest.raises(EvidenceMismatchError) as exc:

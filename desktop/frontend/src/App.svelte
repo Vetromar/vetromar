@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api } from "./api.js";
   import { sourcesJob, captureJob, workspaceJob, downloadJob, startBackgroundWatch } from "./lib/jobs.svelte.js";
+  import { graphsStore } from "./lib/graphs.svelte.js";
   import { updater, startUpdateWatch, relaunchToUpdate } from "./lib/updater.svelte.js";
   import UpdateReady from "./lib/UpdateReady.svelte";
   import Setup from "./lib/Setup.svelte";
@@ -111,12 +112,59 @@
     refresh();
     startBackgroundWatch();
     startUpdateWatch();
+    // Fail-soft: a broken registry read leaves just the private graph.
+    graphsStore.refresh().catch(() => {});
   });
+
+  // Graph switcher: creating a graph happens inline in the header.
+  let newGraphOpen = $state(false);
+  let newGraphName = $state("");
+  let newGraphErr = $state(null);
+
+  async function createGraph() {
+    const name = newGraphName.trim();
+    if (!name) return;
+    try {
+      newGraphErr = null;
+      await graphsStore.create(name);
+      newGraphOpen = false;
+      newGraphName = "";
+    } catch (e) {
+      newGraphErr = e.message;
+    }
+  }
 </script>
 
 <header class="app-header">
   <div class="brand"><Logo size={22} /> vetromar</div>
   {#if inApp}
+    <div class="graph-switcher">
+      <select
+        value={graphsStore.activeId}
+        onchange={(e) => graphsStore.setActive(e.target.value)}
+        title="Which graph you're looking at — capture, notes and search all target it"
+      >
+        {#each graphsStore.list as g (g.id)}
+          <option value={g.id}>{g.name}</option>
+        {/each}
+      </select>
+      {#if newGraphOpen}
+        <input
+          type="text"
+          class="new-graph-input"
+          placeholder="New graph name…"
+          bind:value={newGraphName}
+          onkeydown={(e) => {
+            if (e.key === "Enter") createGraph();
+            if (e.key === "Escape") (newGraphOpen = false), (newGraphErr = null);
+          }}
+        />
+        <button onclick={createGraph}>Create</button>
+      {:else}
+        <button title="Create a new graph" onclick={() => (newGraphOpen = true)}>+</button>
+      {/if}
+      {#if newGraphErr}<span class="error">{newGraphErr}</span>{/if}
+    </div>
     <nav class="tabs">
       <button class:active={view === "capture"} onclick={() => (view = "capture")}>Capture</button>
       <button class:active={view === "knowledge"} onclick={() => (view = "knowledge")}>Knowledge</button>
@@ -188,9 +236,15 @@
         : null}
     />
   {:else if view === "capture"}
-    <Capture backend={health?.backend} />
+    <!-- Keyed on the active graph: switching remounts the tab so every list,
+         search and graph view re-fetches against the new store. -->
+    {#key graphsStore.activeId}
+      <Capture backend={health?.backend} />
+    {/key}
   {:else if view === "knowledge"}
-    <Knowledge />
+    {#key graphsStore.activeId}
+      <Knowledge />
+    {/key}
   {:else if view === "sources"}
     <Sources {health} signedIn={workspace?.signed_in} />
   {:else if view === "workspace"}
