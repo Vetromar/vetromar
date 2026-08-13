@@ -107,6 +107,32 @@ class NoteCreate(BaseModel):
     title: Optional[str] = None
 
 
+class HostConfigure(BaseModel):
+    enabled: Optional[bool] = None
+    port: Optional[int] = None
+    advertise_url: Optional[str] = None  # "" clears the explicit choice
+
+
+class HostCreateGraph(BaseModel):
+    name: str
+    handle: str = "host"
+    display_name: str = ""
+
+
+class GraphJoin(BaseModel):
+    invite_url: str
+    handle: str
+    display_name: str = ""
+
+
+class GraphInvite(BaseModel):
+    role: str = "member"
+
+
+class GraphRole(BaseModel):
+    role: str
+
+
 def _config_http(exc: ConfigError, status: int = 400) -> HTTPException:
     detail = exc.message if exc.hint is None else f"{exc.message} {exc.hint}"
     return HTTPException(status_code=status, detail=detail)
@@ -588,7 +614,7 @@ def create_app() -> FastAPI:
         job.stop_event.set()
         return job.public()
 
-    # -- identity + per-graph sync (keypair era; hosting/join land next) ------
+    # -- identity + per-graph sync -------------------------------------------
 
     @app.get("/api/identity")
     def identity_info() -> dict:
@@ -615,6 +641,232 @@ def create_app() -> FastAPI:
             )
         job, started = start_graph_sync_job(_JOBS, graph_id)
         return {"job_id": job.id, "already_running": not started}
+
+    # -- host mode (this machine serving shared graphs) ------------------------
+
+    def _host_state():
+        from vetromar.hosting.server import HOST
+
+        return HOST
+
+    def _advertise_url(config) -> str:
+        """What invite links carry. Explicit choice first; loopback last
+        resort (works for same-machine testing, nothing else)."""
+        if config.host_advertise_url:
+            return config.host_advertise_url.rstrip("/")
+        return f"http://127.0.0.1:{config.host_port}"
+
+    @app.get("/api/host")
+    def host_status() -> dict:
+        from vetromar.hosting.addresses import candidate_addresses
+
+        config = load_config()
+        return {
+            "enabled": config.host_enabled,
+            "running": _host_state().running,
+            "port": config.host_port,
+            "advertise_url": _advertise_url(config),
+            "advertise_url_set": bool(config.host_advertise_url),
+            "candidates": candidate_addresses(config.host_port),
+        }
+
+    @app.post("/api/host")
+    def host_configure(body: HostConfigure) -> dict:
+        updates: dict = {}
+        if body.enabled is not None:
+            updates["host_enabled"] = body.enabled
+        if body.port is not None:
+            if not (1024 <= body.port <= 65535):
+                raise HTTPException(status_code=400, detail="Port must be 1024-65535.")
+            updates["host_port"] = body.port
+        if body.advertise_url is not None:
+            url = body.advertise_url.strip().rstrip("/")
+            if url and not url.startswith(("http://", "https://")):
+                raise HTTPException(
+                    status_code=400,
+                    detail="The address must start with http:// or https://.",
+                )
+            updates["host_advertise_url"] = url  # empty string clears it
+        if updates:
+            save_config(updates)
+        config = load_config()
+        host = _host_state()
+        try:
+            if config.host_enabled and not host.running:
+                host.start(config.host_port, config.host_bind)
+            elif not config.host_enabled and host.running:
+                host.stop()
+            elif config.host_enabled and host.running and host.port != config.host_port:
+                host.stop()
+                host.start(config.host_port, config.host_bind)
+        except OSError as exc:  # port in use etc.
+            raise HTTPException(status_code=400, detail=f"Could not start hosting: {exc}")
+        return host_status()
+
+    def _graph_client(info):
+        """An authenticated client for the graph's host, as this identity."""
+        from vetromar.identity import ensure_identity
+        from vetromar.workspace.client import CloudClient
+
+        client = CloudClient(info.host_url, workspace_id=info.workspace_id)
+        client.login_with_key(ensure_identity())
+        return client
+
+    def _graph_call(graph_id: str, fn):
+        from vetromar.workspace.client import NotSignedIn, WorkspaceError
+
+        try:
+            info = graphs.get_graph(graph_id)
+        except GraphError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        if not info.synced:
+            raise HTTPException(
+                status_code=400, detail="this graph is not connected to a host"
+            )
+        try:
+            client = _graph_client(info)
+        except NotSignedIn as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        except WorkspaceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            return fn(client, info)
+        except NotSignedIn as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        except WorkspaceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            client.close()
+
+    @app.post("/api/host/graphs")
+    def host_create_graph(body: HostCreateGraph) -> dict:
+        """Create a shared graph ON THIS MACHINE: workspace on the embedded
+        server + local replica, bound and registered in one motion."""
+        from vetromar.identity import ensure_identity
+        from vetromar.store import Store
+        from vetromar.workspace.client import CloudClient, WorkspaceError
+        from vetromar.workspace.engine import bind_workspace
+
+        config = load_config()
+        if not config.host_enabled or not _host_state().running:
+            raise HTTPException(
+                status_code=400, detail="Turn hosting on before creating a graph here."
+            )
+        advertise = _advertise_url(config)
+        client = CloudClient(advertise, http=None)
+        try:
+            client.login_with_key(ensure_identity())
+            ws = client.create_workspace(
+                body.name.strip(),
+                body.handle.strip() or "host",
+                body.display_name.strip() or body.handle.strip() or "Host",
+            )
+        except WorkspaceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            client.close()
+
+        try:
+            info = graphs.create_graph(body.name)
+        except GraphError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        graphs.update_graph(
+            info.id,
+            host_url=advertise,
+            workspace_id=ws["workspace_id"],
+            role="host",
+            handle=ws["handle"],
+            display_name=ws["display_name"],
+        )
+        # Fresh empty replica: the silent first-bind, not an upload decision.
+        db_path = graphs.resolve_db_path(info.id)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        store = Store(db_path)
+        try:
+            bind_workspace(store, ws["workspace_id"])
+        finally:
+            store.close()
+        return graphs.get_graph(info.id).to_dict()
+
+    @app.post("/api/graphs/join")
+    def graphs_join(body: GraphJoin) -> dict:
+        """Join a friend's graph from a pasted invite link: enroll this
+        identity, create the local replica, bind, and start the first sync."""
+        from urllib.parse import parse_qs, urlsplit
+
+        from vetromar.identity import ensure_identity
+        from vetromar.store import Store
+        from vetromar.ui_server.workspace_jobs import start_graph_sync_job
+        from vetromar.workspace.client import CloudClient, WorkspaceError
+        from vetromar.workspace.engine import bind_workspace
+
+        parts = urlsplit(body.invite_url.strip())
+        token = (parse_qs(parts.query).get("token") or [None])[0]
+        if not parts.scheme or not parts.netloc or not token:
+            raise HTTPException(
+                status_code=400,
+                detail="That doesn't look like an invite link — paste the whole URL.",
+            )
+        host_url = f"{parts.scheme}://{parts.netloc}"
+        handle = body.handle.strip()
+        if not handle:
+            raise HTTPException(status_code=400, detail="Pick a handle first.")
+
+        client = CloudClient(host_url)
+        try:
+            joined = client.accept_invite(
+                token,
+                ensure_identity(),
+                handle,
+                body.display_name.strip() or handle.title(),
+            )
+        except WorkspaceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            client.close()
+
+        info = graphs.create_graph(joined["workspace_name"])
+        graphs.update_graph(
+            info.id,
+            host_url=host_url,
+            workspace_id=joined["workspace_id"],
+            role=joined["role"],
+            handle=joined["handle"],
+            display_name=joined["display_name"],
+        )
+        db_path = graphs.resolve_db_path(info.id)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        store = Store(db_path)
+        try:
+            bind_workspace(store, joined["workspace_id"])
+        finally:
+            store.close()
+        job, _ = start_graph_sync_job(_JOBS, info.id)
+        return {**graphs.get_graph(info.id).to_dict(), "sync_job_id": job.id}
+
+    # -- graph membership (works against any connected graph's host) ----------
+
+    @app.get("/api/graphs/{graph_id}/members")
+    def graph_members(graph_id: str) -> dict:
+        return _graph_call(graph_id, lambda c, i: c.members())
+
+    @app.post("/api/graphs/{graph_id}/invites")
+    def graph_invite(graph_id: str, body: GraphInvite) -> dict:
+        def mint(client, info):
+            resp = client.create_invite(body.role)
+            resp["url"] = info.host_url.rstrip("/") + resp["url_path"]
+            return resp
+
+        return _graph_call(graph_id, mint)
+
+    @app.delete("/api/graphs/{graph_id}/members/{principal_id}")
+    def graph_remove_member(graph_id: str, principal_id: str) -> dict:
+        _graph_call(graph_id, lambda c, i: c.remove_member(principal_id))
+        return {"ok": True}
+
+    @app.post("/api/graphs/{graph_id}/members/{principal_id}/role")
+    def graph_set_role(graph_id: str, principal_id: str, body: GraphRole) -> dict:
+        return _graph_call(graph_id, lambda c, i: c.set_role(principal_id, body.role))
 
     # -- sources (the M10 connect/sync flow; engine calls go straight to ------
     # -- vetromar/sources/*, same seams as the CLI) ---------------------------
@@ -1086,12 +1338,28 @@ def run_server(host: str = "127.0.0.1", port: int = 0) -> None:
     ws_scheduler = WorkspaceSyncScheduler(_JOBS)
     ws_scheduler.start()
     _MEETINGS.start()
+    # Host mode: serve shared graphs from this machine (real server only —
+    # same rule as the schedulers). Failure must not block the app.
+    host_server = None
+    boot_config = load_config()
+    if boot_config.host_enabled:
+        try:
+            from vetromar.hosting.server import HOST
+
+            HOST.start(boot_config.host_port, boot_config.host_bind)
+            host_server = HOST
+        except Exception:  # noqa: BLE001 — port taken, etc.; the UI shows state
+            import logging as _logging
+
+            _logging.getLogger(__name__).exception("embedded graph host failed to start")
     try:
         uvicorn.run(create_app(), host=host, port=port, log_level="warning")
     finally:
         scheduler.stop()
         ws_scheduler.stop()
         _MEETINGS.stop()
+        if host_server is not None:
+            host_server.stop()
 
 
 app = create_app()

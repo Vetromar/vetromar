@@ -9,11 +9,12 @@
   import Capture from "./lib/Capture.svelte";
   import Knowledge from "./lib/Knowledge.svelte";
   import Sources from "./lib/Sources.svelte";
+  import Graphs from "./lib/Graphs.svelte";
   import Logo from "./lib/Logo.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import GettingStarted from "./lib/GettingStarted.svelte";
 
-  let view = $state("loading"); // loading | setup | capture | knowledge | sources
+  let view = $state("loading"); // loading | setup | capture | knowledge | sources | graphs
   let health = $state(null);
   let loadError = $state(null);
   let onboarding = $state(null); // GET /api/onboarding snapshot
@@ -84,7 +85,7 @@
   }
 
   const inApp = $derived(
-    view === "capture" || view === "knowledge" || view === "sources"
+    view === "capture" || view === "knowledge" || view === "sources" || view === "graphs"
   );
 
   // Relaunching mid-job would kill a live sync/capture AND risk the swapped
@@ -155,6 +156,7 @@
       <button class:active={view === "capture"} onclick={() => (view = "capture")}>Capture</button>
       <button class:active={view === "knowledge"} onclick={() => (view = "knowledge")}>Knowledge</button>
       <button class:active={view === "sources"} onclick={() => (view = "sources")}>Sources</button>
+      <button class:active={view === "graphs"} onclick={() => (view = "graphs")}>Graphs</button>
     </nav>
   {/if}
   <div class="header-right">
@@ -230,6 +232,8 @@
     {/key}
   {:else if view === "sources"}
     <Sources {health} />
+  {:else if view === "graphs"}
+    <Graphs />
   {/if}
 </main>
 

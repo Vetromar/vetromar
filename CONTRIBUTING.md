@@ -36,8 +36,12 @@ read them before opening a PR.
 
 5. **`cloud` never imports from `vetromar`** except
    `vetromar/workspace/wire.py` (the shared wire model), and `vetromar`
-   never imports `cloud`. This keeps the desktop sidecar bundle free of
-   server code and the server image free of ML dependencies.
+   never imports `cloud` — except **`vetromar/hosting/`**, the one
+   sanctioned carve-out: host mode runs the graph server embedded in the
+   desktop app, and `hosting/` imports `cloud` lazily (inside functions)
+   so non-hosting users never pay the import. Nothing else in `vetromar`
+   may import `cloud`, and the server image still never imports
+   vetromar-except-wire (it stays ML-free).
 
 6. **AI construction goes through `vetromar/ai.py`** (`get_provider`) —
    never instantiate provider SDK clients elsewhere. Gate AI features on

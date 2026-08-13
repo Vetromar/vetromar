@@ -215,10 +215,25 @@ class Config:
         )
     )
 
-    # Workspace server (self-hosted): where sign-in and multi-device sync
-    # point. Default = a server on this machine (`python -m cloud` /
-    # docker compose); teams set their own server's URL in the app's sign-in
-    # screen (persists here via config.toml).
+    # Host mode: this machine serving shared graphs (the embedded cloud/
+    # server in the sidecar). Port is fixed and externally reachable —
+    # members connect to it; advertise_url is what invite links carry
+    # (LAN IP, tailnet address, DDNS name — the host's explicit choice).
+    host_enabled: bool = field(
+        default_factory=lambda: _as_bool(os.environ.get("VETROMAR_HOST_ENABLED", ""))
+    )
+    host_port: int = field(
+        default_factory=lambda: int(os.environ.get("VETROMAR_HOST_PORT", "8788"))
+    )
+    host_bind: str = field(
+        default_factory=lambda: os.environ.get("VETROMAR_HOST_BIND", "0.0.0.0")
+    )
+    host_advertise_url: str | None = field(
+        default_factory=lambda: os.environ.get("VETROMAR_HOST_ADVERTISE_URL") or None
+    )
+
+    # Legacy (pre-shared-graphs) workspace server URL. Unused by current
+    # code paths; kept so old config.toml files load cleanly.
     cloud_api_url: str = field(
         default_factory=lambda: os.environ.get(
             "VETROMAR_CLOUD_API_URL", "http://localhost:8787"
@@ -400,6 +415,14 @@ def load_config() -> Config:
             "meeting_grace_seconds",
             20,
             cast=int,
+        ),
+        host_enabled=_resolve(
+            "VETROMAR_HOST_ENABLED", file_cfg, "host_enabled", False, cast=_as_bool
+        ),
+        host_port=_resolve("VETROMAR_HOST_PORT", file_cfg, "host_port", 8788, cast=int),
+        host_bind=_resolve("VETROMAR_HOST_BIND", file_cfg, "host_bind", "0.0.0.0"),
+        host_advertise_url=_resolve(
+            "VETROMAR_HOST_ADVERTISE_URL", file_cfg, "host_advertise_url", None
         ),
         cloud_api_url=_resolve(
             "VETROMAR_CLOUD_API_URL", file_cfg, "cloud_api_url", "http://localhost:8787"

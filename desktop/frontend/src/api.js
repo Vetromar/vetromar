@@ -112,6 +112,16 @@ export const api = {
   graphNote: (graphId, text, title) =>
     jsonPost("/api/graphs/" + graphId + "/note", { text, title: title || null }),
   graphSync: (graphId) => request("/api/graphs/" + graphId + "/sync", { method: "POST" }),
+  graphsJoin: (body) => jsonPost("/api/graphs/join", body),
+  graphMembers: (id) => request("/api/graphs/" + id + "/members"),
+  graphInvite: (id, role = "member") => jsonPost(`/api/graphs/${id}/invites`, { role }),
+  graphRemoveMember: (id, pid) =>
+    request(`/api/graphs/${id}/members/${pid}`, { method: "DELETE" }),
+  graphSetRole: (id, pid, role) => jsonPost(`/api/graphs/${id}/members/${pid}/role`, { role }),
+  // Host mode (this machine serving shared graphs)
+  hostStatus: () => request("/api/host"),
+  hostConfigure: (body) => jsonPost("/api/host", body),
+  hostCreateGraph: (body) => jsonPost("/api/host/graphs", body),
   // Store browsing (read-only; scoped to the active graph)
   storeSearch: (params) => request("/api/store/search" + qs(withGraph(params))),
   storeUnit: (id) => request("/api/store/units/" + id + qs(withGraph())),

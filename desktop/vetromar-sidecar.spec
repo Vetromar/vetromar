@@ -83,6 +83,12 @@ _HEAVY = [
     # data; pypdf is plain modules.
     "pypdf",
     "docx",
+    # Host mode: the embedded graph host server (vetromar/hosting/ imports
+    # `cloud` lazily — static analysis never sees it). SQLite-backed on
+    # customer machines, so psycopg stays excluded.
+    "cloud",
+    "sqlalchemy",
+    "cryptography",
 ]
 for pkg in _HEAVY:
     try:
@@ -114,7 +120,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib.tests", "PySide6", "PyQt5"],
+    excludes=["tkinter", "matplotlib.tests", "PySide6", "PyQt5", "psycopg"],
     noarchive=False,
 )
 
