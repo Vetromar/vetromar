@@ -47,7 +47,11 @@ class RateLimiter:
     time (see README). This just blunts naive online guessing in dev/v0.
     """
 
-    def __init__(self, max_calls: int = 20, window_seconds: float = 60.0):
+    def __init__(self, max_calls: int = 120, window_seconds: float = 60.0):
+        # 120/min: every sync run mints a challenge (challenge+verify = 2
+        # calls), so N members × frequent syncs from one NAT'd IP is normal
+        # traffic now. There is no password to guess anymore — this only
+        # bounds nonce-table growth and naive flooding.
         self.max_calls = max_calls
         self.window = window_seconds
         self._hits: dict[str, deque[float]] = defaultdict(deque)

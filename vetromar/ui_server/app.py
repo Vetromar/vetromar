@@ -117,6 +117,7 @@ class HostCreateGraph(BaseModel):
     name: str
     handle: str = "host"
     display_name: str = ""
+    host_url: Optional[str] = None  # a remote server this identity owns; None → embedded
 
 
 class GraphJoin(BaseModel):
@@ -774,19 +775,27 @@ def create_app() -> FastAPI:
 
     @app.post("/api/host/graphs")
     def host_create_graph(body: HostCreateGraph) -> dict:
-        """Create a shared graph ON THIS MACHINE: workspace on the embedded
-        server + local replica, bound and registered in one motion."""
+        """Create a shared graph on a server this identity OWNS: the embedded
+        host by default, or a remote one (VPS) when `host_url` is given —
+        workspace + local replica, bound and registered in one motion."""
         from vetromar.identity import ensure_identity
-        from vetromar.store import Store
         from vetromar.workspace.client import CloudClient, WorkspaceError
         from vetromar.workspace.engine import bind_workspace
 
         config = load_config()
-        if not config.host_enabled or not _host_state().running:
-            raise HTTPException(
-                status_code=400, detail="Turn hosting on before creating a graph here."
-            )
-        advertise = _advertise_url(config)
+        if body.host_url:
+            advertise = body.host_url.strip().rstrip("/")
+            if not advertise.startswith(("http://", "https://")):
+                raise HTTPException(
+                    status_code=400,
+                    detail="The server URL must start with http:// or https://.",
+                )
+        else:
+            if not config.host_enabled or not _host_state().running:
+                raise HTTPException(
+                    status_code=400, detail="Turn hosting on before creating a graph here."
+                )
+            advertise = _advertise_url(config)
         client = CloudClient(advertise, http=None)
         try:
             client.login_with_key(ensure_identity())
@@ -1090,8 +1099,23 @@ def create_app() -> FastAPI:
     # -- vetromar/graphs.py) ---------------------------------------------------
 
     @app.get("/api/graphs")
-    def graphs_list() -> list[dict]:
-        return [g.to_dict() for g in graphs.list_graphs()]
+    def graphs_list(counts: bool = False) -> list[dict]:
+        """The registry; `counts=true` adds per-graph quarantine counts
+        (opens each store — the Graphs tab wants it, pollers don't)."""
+        entries = []
+        for g in graphs.list_graphs():
+            entry = g.to_dict()
+            if counts and g.kind != "private":
+                try:
+                    store = Store(graphs.resolve_db_path(g.id))
+                    try:
+                        entry["quarantine_count"] = store.quarantine_count()
+                    finally:
+                        store.close()
+                except Exception:  # noqa: BLE001 — a broken replica shows 0
+                    entry["quarantine_count"] = None
+            entries.append(entry)
+        return entries
 
     @app.post("/api/graphs")
     def graphs_create(body: GraphCreate) -> dict:

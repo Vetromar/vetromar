@@ -1,27 +1,41 @@
 # Vetromar — orientation for AI-assisted development
 
-Local-first knowledge engine (AGPL-3.0): captures meetings + syncs sources
-into one evidence-gated, bi-temporal graph, queryable over MCP. Read
-`CONTRIBUTING.md` first — its invariants are non-negotiable and are
-summarized here for quick reference.
+Local-first knowledge engine for builders (AGPL-3.0): captures meetings +
+syncs sources into evidence-gated, bi-temporal graphs, queryable over MCP.
+Every user has a PRIVATE graph (never leaves the machine) plus any number
+of SHARED graphs — co-op graphs synced through a host the group's
+super-connector runs themselves ("Minecraft server" model: the app's
+embedded Host mode on an always-on machine, or headless `python -m cloud`
+on a VPS; Tailscale/port-forwarding/VPS are all just addresses). Identity
+is a local Ed25519 keypair (`vetromar/identity.py`) — no accounts, no
+passwords, no central infrastructure. Read `CONTRIBUTING.md` first — its
+invariants are non-negotiable and are summarized here for quick reference.
 
 ## Layout
 
 - `vetromar/` — the engine + CLI + desktop sidecar package.
-  - `schema.py` universal shapes (`Unit`/`Episode`/`Entity`/`Edge`);
-    `store/` graph-shaped SQLite (FTS5 + vectors, additive migrations only);
-    `extraction/` (frozen meeting path + generic extraction + `repair.py`
-    quote healing); `search/` hybrid FTS+embedding retrieval; `linking/`
-    auto-linking; `capture/` audio pipeline; `transcription/` local-vs-
-    Deepgram seam; `sources/` generic MCP client (catalog/OAuth/sync agent);
-    `providers/` BYO AI providers (anthropic + openai-compat);
-    `mcp_server/` the read/write MCP surface (`vetromar serve`);
-    `workspace/` self-hosted sync client; `ui_server/` FastAPI behind the
-    desktop app; `operations.py` shared CLI/UI logic; `views.py` shared
+  - `schema.py` universal shapes (`Unit`/`Episode`/`Entity`/`Edge`,
+    `ContributorRef` attribution); `store/` graph-shaped SQLite (FTS5 +
+    vectors, additive migrations only; shared-graph stores stamp a
+    contributor at the write door); `graphs.py` the multi-graph registry
+    (`~/.vetromar/graphs.json`, private graph synthesized, replicas at
+    `~/.vetromar/graphs/<id>/`); `identity.py` the keypair;
+    `hosting/` the embedded graph host (THE one sanctioned `cloud` import,
+    lazy); `extraction/` (frozen meeting path + generic extraction +
+    `repair.py` quote healing); `search/` hybrid FTS+embedding retrieval;
+    `linking/` auto-linking; `capture/` audio pipeline; `transcription/`
+    local-vs-Deepgram seam; `sources/` generic MCP client (catalog/OAuth/
+    sync agent; private-graph-only for now); `providers/` BYO AI providers
+    (anthropic + openai-compat); `mcp_server/` the read/write MCP surface
+    (`vetromar serve`, `graph` param on every tool); `workspace/`
+    per-graph sync client (challenge auth, X-Workspace-Id);
+    `ui_server/` FastAPI behind the desktop app; `operations.py` shared
+    CLI/UI logic incl. `share_to_graph` (the membrane); `views.py` shared
     read views; `ai.py` the ONE provider chooser.
-- `cloud/` — the self-hostable workspace server (accounts/invites/sync).
-  Never imports `vetromar` except `workspace/wire.py`; never imported by
-  `vetromar`.
+- `cloud/` — the graph host server (keypair principals, invites, roles
+  host/admin/member, per-workspace replication log). Never imports
+  `vetromar` except `workspace/wire.py`; imported by `vetromar` ONLY via
+  `vetromar/hosting/` (lazy).
 - `desktop/` — Svelte 5 frontend + Tauri shell + PyInstaller sidecar spec.
   Full build: `desktop/build.sh`. Frontend-only changes can rebuild
   shell-only, but ANY Python delta needs the full build (a stale sidecar
@@ -76,5 +90,11 @@ python -m cloud --port 8787       # self-hosted workspace server, dev
   stdin open (`sleep 10 | ./vetromar-helper …`) when testing. An ungranted
   System Audio Recording permission makes taps deliver silent zeros, not
   errors — `capture/meeting.py:_has_audio` is the detection seam.
+- `VETROMAR_HOME=<dir>` isolates a complete app instance — N instances on
+  one machine simulate N people (the 3-person co-op E2E:
+  `.claude/skills/verify/shared_graphs_e2e.py`). A stale listener on the
+  embedded host's port shadows it on loopback — kill by port, not by name.
+- Contributor stamping is _log_changes-gated in `store.py` — remote applies
+  must never claim local identity; don't "simplify" that guard away.
 - Headless verification pattern for UI changes:
   `.claude/skills/verify/SKILL.md`.

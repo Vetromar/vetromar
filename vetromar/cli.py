@@ -12,6 +12,7 @@ Read surface:       serve (MCP)
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,13 @@ app = typer.Typer(help="Vetromar: decision capture + store + MCP read surface.")
 
 
 def _open_store() -> Store:
+    # VETROMAR_GRAPH selects a shared graph's store (dev/scripting seam —
+    # the CLI stays private-graph by default, same as every other surface).
+    graph = os.environ.get("VETROMAR_GRAPH")
+    if graph:
+        from vetromar import graphs
+
+        return graphs.open_store(graph)
     config = load_config()
     config.ensure_dirs()
     return Store(config.db_path)

@@ -105,7 +105,7 @@ export const api = {
   sourcesRemove: (name) => request("/api/sources/" + name, { method: "DELETE" }),
   sourcesSync: (name, opts = {}) => jsonPost("/api/sources/" + name + "/sync", opts),
   // Graphs (private + shared; the header switcher scopes everything above)
-  graphsList: () => request("/api/graphs"),
+  graphsList: (counts = false) => request("/api/graphs" + qs({ counts })),
   graphsCreate: (name) => jsonPost("/api/graphs", { name }),
   graphsRemove: (id, deleteFiles = false) =>
     request("/api/graphs/" + id + qs({ delete_files: deleteFiles }), { method: "DELETE" }),

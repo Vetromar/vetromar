@@ -42,6 +42,24 @@ page.wait_for_selector("nav.tabs")   # app loaded
 
 Useful selectors: `nav.tabs button:has-text('Sources')`, `.source-row`, `.sync-report`, `.activity-badge` (header badge for jobs on other tabs), `button:has-text('Settings')` → `Setup.svelte` (also the settings screen), `#autosync-interval`.
 
+## Shared graphs (multi-instance)
+
+`VETROMAR_HOME=<dir>` isolates a complete app instance (config, store,
+graphs registry, identity key, host db) — N instances on one machine are N
+"people". The canonical 3-person co-op check is scripted:
+
+```bash
+.venv/bin/python .claude/skills/verify/shared_graphs_e2e.py
+# → "E2E: ALL CHECKS PASSED"; hosts on port 18795, cleans up after itself
+```
+
+It drives: host-mode on A → invites → B/C join → note + membrane share →
+3-way convergence with @handle attribution → zero quarantine → MCP read of
+the shared graph. Per-instance knobs: `VETROMAR_HOST_PORT` (embedded host),
+`VETROMAR_GRAPH=<id>` (point the CLI/serve at a shared graph),
+`VETROMAR_IDENTITY_KEY` (identity file). Stale listeners on the host port
+shadow the embedded server on loopback — `lsof -ti :<port> | xargs kill`.
+
 ## Verify the bundled app (after desktop/build.sh)
 
 - Build takes ~10 min; Tauri's dmg script fails headless — build.sh's hdiutil fallback handles it (exit 0 overall is what matters).

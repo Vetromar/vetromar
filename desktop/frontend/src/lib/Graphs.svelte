@@ -61,10 +61,21 @@
     }
   }
 
-  // A finished sync updates last_synced_at — refresh the list.
+  // A finished sync updates last_synced_at — refresh the list, with
+  // quarantine counts (divergence must be visible, never silent).
+  let quarantine = $state({}); // graph id → count
+  async function refreshCounts() {
+    try {
+      const rows = await api.graphsList(true);
+      quarantine = Object.fromEntries(
+        rows.map((g) => [g.id, g.quarantine_count ?? 0])
+      );
+    } catch {}
+  }
   $effect(() => {
     void workspaceJob.finishedCount;
     graphsStore.refresh().catch(() => {});
+    refreshCounts();
   });
 
   // -- members panel (host/admin of the selected graph) -------------------------
@@ -188,6 +199,35 @@
     }
   }
 
+  // Remote server (VPS) — same create, different address; the server must
+  // already know this identity as its owner (`python -m cloud set-owner`).
+  let remoteUrl = $state("");
+  let remoteName = $state("");
+  let remoteHandle = $state("");
+  let remoteBusy = $state(false);
+  let remoteErr = $state(null);
+
+  async function createRemoteGraph() {
+    if (!remoteUrl.trim() || !remoteName.trim() || remoteBusy) return;
+    remoteBusy = true;
+    remoteErr = null;
+    try {
+      const created = await api.hostCreateGraph({
+        name: remoteName.trim(),
+        handle: remoteHandle.trim() || "host",
+        display_name: "",
+        host_url: remoteUrl.trim(),
+      });
+      remoteName = "";
+      await graphsStore.refresh();
+      graphsStore.setActive(created.id);
+    } catch (e) {
+      remoteErr = e.message;
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
   onMount(() => {
     graphsStore.refresh().catch(() => {});
     refreshHost();
@@ -224,6 +264,9 @@
               · synced {new Date(g.last_synced_at).toLocaleTimeString()}
             {:else}
               · never synced
+            {/if}
+            {#if quarantine[g.id]}
+              · <span class="error" style="font-size:12px">{quarantine[g.id]} change{quarantine[g.id] === 1 ? "" : "s"} quarantined</span>
             {/if}
           {:else}
             local only — not connected to a host
@@ -369,6 +412,28 @@
       {#if createErr}<p class="error">{createErr}</p>{/if}
     </div>
   {/if}
+
+  <details style="margin-top:8px">
+    <summary class="muted" style="cursor:pointer; font-size:13px">
+      Or create a graph on a remote server (a VPS you set up)
+    </summary>
+    <div class="stack" style="margin-top:10px">
+      <p class="muted" style="font-size:12px; margin:0">
+        The server must know your key as its owner — run
+        <code>python -m cloud set-owner &lt;your public key&gt;</code> there first
+        (your key is in Settings → Identity).
+      </p>
+      <div class="row" style="gap:8px">
+        <input type="text" bind:value={remoteUrl} placeholder="http://my-vps.example:8787" style="flex:2" />
+        <input type="text" bind:value={remoteName} placeholder="Graph name" style="flex:2" />
+        <input type="text" bind:value={remoteHandle} placeholder="handle" style="flex:1" />
+        <button disabled={remoteBusy || !remoteUrl.trim() || !remoteName.trim()} onclick={createRemoteGraph}>
+          {remoteBusy ? "Creating…" : "Create"}
+        </button>
+      </div>
+      {#if remoteErr}<p class="error">{remoteErr}</p>{/if}
+    </div>
+  </details>
 </div>
 
 <style>
