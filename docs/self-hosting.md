@@ -19,7 +19,7 @@ the app.
 ```sh
 git clone <this repo> && cd vetromar
 docker compose up -d
-docker compose exec server python -m cloud set-owner <your-public-key>
+docker compose exec vetromar-server python -m cloud set-owner <your-public-key>
 ```
 
 Then create graphs and mint invites from the desktop app, pointing it at

@@ -64,7 +64,7 @@ if [[ ! -f "$KEY_PATH" ]]; then
   exit 1
 fi
 
-# Apple signing + notarization (M23 follow-up: releases are signed builds).
+# Apple signing + notarization — releases are signed, notarized builds.
 IDENTITY_LINE="$(security find-identity -v -p codesigning | grep -m1 "Developer ID Application" || true)"
 if [[ -z "$IDENTITY_LINE" ]]; then
   echo "ERROR: no 'Developer ID Application' certificate in the keychain." >&2

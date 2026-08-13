@@ -14,7 +14,7 @@ dependencies = [
     "openai>=1.40",
     "ollama>=0.4",
     "mcp>=1.9,<2",
-    # Workspace sync client (vetromar/workspace) talks to the cloud service.
+    # Workspace sync client (vetromar/workspace) talks to a self-hosted graph host.
     "httpx>=0.27",
     # Retrieval: local ONNX embeddings + SQL cosine search. Core, not an
     # extra — "queryable by the customer's agent" is the product.
@@ -50,8 +50,9 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.27",
 ]
-# The workspace cloud service (accounts + sync log). Server-side only — the
-# desktop sidecar never imports `cloud`, so none of this enters the bundle.
+# The graph host server (keypair principals + replication log). Runs headless
+# via `python -m cloud`, and ships inside the desktop sidecar for embedded Host
+# mode — `vetromar/hosting/` imports it lazily (see vetromar-sidecar.spec).
 cloud = [
     "fastapi>=0.110",
     "uvicorn>=0.29",

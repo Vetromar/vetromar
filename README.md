@@ -50,7 +50,7 @@ headless server anywhere — see **[docs/self-hosting.md](docs/self-hosting.md)*
 
 ```sh
 docker compose up -d
-docker compose exec server python -m cloud set-owner <your-public-key>
+docker compose exec vetromar-server python -m cloud set-owner <your-public-key>
 ```
 
 ## Development

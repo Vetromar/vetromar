@@ -20,7 +20,7 @@ Environment:
   The schema is Postgres-portable; swap the URL at deploy time.
 - `CLOUD_CORS_ORIGINS` — comma-separated allowed origins. Default `*` (dev).
 - `CLOUD_PUBLIC_URL` — the base URL members reach this server at (baked into
-  invite links by the app). (Legacy name `CLOUD_WEBSITE_URL` is honored.)
+  invite links by the app).
 - `CLOUD_OWNER_PUBLIC_KEY` — enroll this key as owner at boot (container
   deploys; same effect as `set-owner`).
 

@@ -59,8 +59,8 @@ root = sys.argv[1]
 # Tauri's resource copy DEREFERENCES symlinks into real files. A framework
 # binary's signature references the framework Info.plist relative to its own
 # location, so a symlink like _internal/Python -> Python.framework/.../Python
-# becomes a real copy whose signature is invalid where it lands (the v0.1.7
-# first-notarization rejection). Dereference symlinks here first so staging
+# becomes a real copy whose signature is invalid where it lands (this has
+# caused a notarization rejection). Dereference symlinks here first so staging
 # matches the final bundle exactly and every file is signed in place.
 links = []
 for dirpath, dirnames, filenames in os.walk(root):

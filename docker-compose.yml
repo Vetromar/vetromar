@@ -1,6 +1,6 @@
-# Self-hosted Vetromar workspace server (accounts + invites + multi-device
-# sync) with Postgres. `docker compose up -d`, then point the desktop app's
-# sign-in screen at http://localhost:8787 (or your reverse-proxied domain).
+# Self-hosted Vetromar graph host (keypair principals + invites + multi-device
+# sync) with Postgres. `docker compose up -d`, then point the desktop app at
+# http://localhost:8787 (or your reverse-proxied domain) when joining a graph.
 #
 # Single-container SQLite variant (no Postgres): drop the `db` service and
 # set CLOUD_DATABASE_URL=sqlite:////data/cloud.db with a volume on /data.
@@ -13,9 +13,8 @@ services:
       - "8787:8787"
     environment:
       CLOUD_DATABASE_URL: postgresql://vetromar:vetromar@db:5432/vetromar
-      # The URL users reach this server at — used in password-reset links
-      # minted by `python -m cloud reset-link`. Set to your public
-      # https:// domain in production.
+      # The base URL members reach this server at — baked into invite
+      # links by the app. Set to your public https:// domain in production.
       CLOUD_PUBLIC_URL: http://localhost:8787
     depends_on:
       db:

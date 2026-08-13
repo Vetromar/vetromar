@@ -232,13 +232,6 @@ class Config:
         default_factory=lambda: os.environ.get("VETROMAR_HOST_ADVERTISE_URL") or None
     )
 
-    # Legacy (pre-shared-graphs) workspace server URL. Unused by current
-    # code paths; kept so old config.toml files load cleanly.
-    cloud_api_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "VETROMAR_CLOUD_API_URL", "http://localhost:8787"
-        )
-    )
     workspace_sync_interval_minutes: int = field(
         default_factory=lambda: int(
             os.environ.get("VETROMAR_WORKSPACE_SYNC_INTERVAL_MINUTES", "5")
@@ -424,9 +417,6 @@ def load_config() -> Config:
         host_advertise_url=_resolve(
             "VETROMAR_HOST_ADVERTISE_URL", file_cfg, "host_advertise_url", None
         ),
-        cloud_api_url=_resolve(
-            "VETROMAR_CLOUD_API_URL", file_cfg, "cloud_api_url", "http://localhost:8787"
-        ),
         workspace_sync_interval_minutes=_resolve(
             "VETROMAR_WORKSPACE_SYNC_INTERVAL_MINUTES",
             file_cfg,
@@ -471,21 +461,6 @@ def save_api_key(key: str) -> Path:
     CREDENTIALS_PATH.write_text(key.strip() + "\n")
     CREDENTIALS_PATH.chmod(0o600)
     return CREDENTIALS_PATH
-
-
-def save_cloud_token(token: str) -> Path:
-    """Persist the workspace session token to its own 0600 file."""
-    path = cloud_credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token.strip() + "\n")
-    path.chmod(0o600)
-    return path
-
-
-def clear_cloud_token() -> None:
-    path = cloud_credentials_path()
-    if path.exists():
-        path.unlink()
 
 
 def save_openai_api_key(key: str) -> Path:

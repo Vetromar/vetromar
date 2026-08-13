@@ -1,4 +1,4 @@
-"""First-sign-in outbox seeding: rows written before replication existed
+"""First-connect outbox seeding: rows written before replication existed
 
 (any store predating replication) get insert change records so
 the whole store uploads on day one. Idempotent: only rows with no insert

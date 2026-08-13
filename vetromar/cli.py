@@ -57,7 +57,7 @@ def _ensure_local_backend_ready(config) -> None:
 
 # -- setup & health -----------------------------------------------------------
 
-_RAM_TIERS = """Local model RAM tiers (measured; see CLAUDE.md):
+_RAM_TIERS = """Local model RAM tiers (measured):
   <12 GB  no viable local tier — choose Cloud instead
   16–24 GB  qwen3.5:9b (default) — ~30 s–2 min per meeting
   ≥32 GB  qwen3.5:27b — overnight tier on less RAM
