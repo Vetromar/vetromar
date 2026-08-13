@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { api } from "../api.js";
 
-  let { role, workspaceName, onClose, onNavigate } = $props();
+  let { onClose, onNavigate } = $props();
 
   // The agent-paste prompt (server-composed, references the MCP shim the
   // ui_server installs at boot). Fail-soft: without it the card falls back to
@@ -36,18 +36,10 @@
     }
   }
 
-  const isAdmin = role === "admin";
-  const welcomeNote = workspaceName
-    ? isAdmin
-      ? `You're the admin of ${workspaceName} — you can invite your team when you're ready.`
-      : `You're part of ${workspaceName} — everything here syncs across your team automatically.`
-    : null;
-
   const cards = [
     {
       title: "Welcome to Vetromar",
       body: "Vetromar turns your meetings, docs, and tools into one living knowledge base — every decision, linked and searchable.",
-      note: welcomeNote,
     },
     {
       title: "Capture a meeting",
@@ -71,26 +63,10 @@
         "Vetromar speaks MCP, the language AI agents use to reach tools. Just ask your agent to connect to Vetromar — and it can answer from everything your team knows.",
       mcp: true,
     },
-    ...(isAdmin
-      ? [
-          {
-            title: "Invite your team",
-            body: "Vetromar gets better with every teammate — everyone's meetings and sources land in the same shared graph. Send an invite from the Workspace tab.",
-            go: { label: "Go to Workspace", tab: "workspace" },
-          },
-        ]
-      : []),
-    // Solo (no workspace connected): everything works locally; a server is
-    // the optional team/multi-device play.
-    ...(!workspaceName
-      ? [
-          {
-            title: "Working with a team?",
-            body: "Everything works right here on this computer, no account needed. When you want to sync with a team or your other devices, connect to a workspace server from the Workspace tab — entirely optional.",
-            go: { label: "Go to Workspace", tab: "workspace" },
-          },
-        ]
-      : []),
+    {
+      title: "Graphs, private and shared",
+      body: "Your private graph lives entirely on this computer — no account, nothing leaves your machine. Shared graphs, built together with friends, are on the way: you'll host them yourself or join a friend's with an invite link.",
+    },
   ];
 
   let step = $state(0);

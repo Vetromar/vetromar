@@ -94,29 +94,8 @@ class OnboardingUpdate(BaseModel):
     checklist_dismissed: Optional[bool] = None
 
 
-class WorkspaceSignIn(BaseModel):
-    email: str
-    password: str
-
-
-class WorkspaceInvite(BaseModel):
-    role: str = "member"
-
-
 class EpisodeRename(BaseModel):
     title: str
-
-
-class ConfirmPassword(BaseModel):
-    password: str
-
-
-class BindingAction(BaseModel):
-    action: str  # 'upload' is the only action today
-
-
-class ServerUrl(BaseModel):
-    url: str
 
 
 class GraphCreate(BaseModel):
@@ -609,172 +588,32 @@ def create_app() -> FastAPI:
         job.stop_event.set()
         return job.public()
 
-    # -- workspace (M14: required sign-in, team management, multi-device -----
-    # -- sync; engine calls go to vetromar/workspace/*) -----------------------
+    # -- identity + per-graph sync (keypair era; hosting/join land next) ------
 
-    def _cloud_client():
-        from vetromar.workspace.client import CloudClient
+    @app.get("/api/identity")
+    def identity_info() -> dict:
+        """This machine's public key — what a host enrolls. Generated on
+        first read; the private half never leaves ~/.vetromar."""
+        from vetromar.identity import ensure_identity, identity_key_path
 
-        config = load_config()
-        if not config.cloud_token:
-            raise HTTPException(status_code=401, detail="not signed in")
-        return CloudClient(config.cloud_api_url, token=config.cloud_token)
+        return {
+            "public_key": ensure_identity().public_key,
+            "key_path": str(identity_key_path()),
+        }
 
-    def _workspace_call(fn):
-        """Run a cloud call, mapping workspace errors to HTTP statuses the
-        frontend understands (401 → back to sign-in)."""
-        from vetromar.workspace.client import NotSignedIn, WorkspaceError
+    @app.post("/api/graphs/{graph_id}/sync")
+    def graph_sync(graph_id: str) -> dict:
+        from vetromar.ui_server.workspace_jobs import start_graph_sync_job
 
-        client = _cloud_client()
         try:
-            return fn(client)
-        except NotSignedIn as exc:
-            raise HTTPException(status_code=401, detail=str(exc))
-        except WorkspaceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        finally:
-            client.close()
-
-    @app.get("/api/workspace")
-    def workspace_status(refresh: bool = False) -> dict:
-        from vetromar.workspace import auth as ws_auth
-
-        status = ws_auth.refresh_status() if refresh else ws_auth.status()
-        if status["signed_in"]:
-            status["quarantine_count"] = _with_store(lambda s: s.quarantine_count())
-        # The sign-in screen shows/edits the workspace server URL and links
-        # its /signup page.
-        status["server_url"] = load_config().cloud_api_url
-        return status
-
-    @app.post("/api/workspace/server-url")
-    def workspace_server_url(body: ServerUrl) -> dict:
-        url = body.url.strip().rstrip("/")
-        if not url.startswith(("http://", "https://")):
+            info = graphs.get_graph(graph_id)
+        except GraphError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        if not info.synced:
             raise HTTPException(
-                status_code=400,
-                detail="The server URL must start with http:// or https://.",
+                status_code=400, detail="this graph is not connected to a host"
             )
-        save_config({"cloud_api_url": url})
-        return {"url": url}
-
-    @app.post("/api/workspace/open-signup")
-    def workspace_open_signup() -> dict:
-        # Open the workspace server's own signup page in the system browser
-        # (the Tauri webview has no opener plugin).
-        import webbrowser
-
-        url = load_config().cloud_api_url.rstrip("/") + "/signup"
-        opened = False
-        try:
-            opened = bool(webbrowser.open(url))
-        except Exception:  # noqa: BLE001 — headless envs; the URL still renders
-            opened = False
-        return {"url": url, "opened": opened}
-
-    @app.post("/api/workspace/signin")
-    def workspace_signin(body: WorkspaceSignIn) -> dict:
-        from vetromar.workspace import auth as ws_auth
-        from vetromar.workspace.client import WorkspaceError
-
-        try:
-            return ws_auth.sign_in(body.email, body.password)
-        except WorkspaceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    @app.post("/api/workspace/signout")
-    def workspace_signout() -> dict:
-        from vetromar.workspace import auth as ws_auth
-
-        ws_auth.sign_out()
-        return {"ok": True}
-
-    @app.get("/api/workspace/members")
-    def workspace_members() -> dict:
-        return _workspace_call(lambda c: c.members())
-
-    @app.delete("/api/workspace/members/{user_id}")
-    def workspace_remove_member(user_id: str) -> dict:
-        _workspace_call(lambda c: c.remove_member(user_id))
-        return {"ok": True}
-
-    @app.post("/api/workspace/invites")
-    def workspace_invite(body: WorkspaceInvite) -> dict:
-        config = load_config()
-        resp = _workspace_call(lambda c: c.create_invite(body.role))
-        # The copyable link: the server's own invite-accept page + the
-        # one-time token.
-        resp["url"] = config.cloud_api_url.rstrip("/") + resp["url_path"]
-        return resp
-
-    @app.post("/api/workspace/members/{user_id}/reset-link")
-    def workspace_member_reset_link(user_id: str) -> dict:
-        # Admin-minted one-time reset link — the copyable-link idiom again;
-        # the server never emails anyone.
-        config = load_config()
-        resp = _workspace_call(lambda c: c.member_reset_link(user_id))
-        resp["url"] = config.cloud_api_url.rstrip("/") + resp["url_path"]
-        return resp
-
-    @app.get("/api/workspace/binding")
-    def workspace_binding() -> dict:
-        """Does this machine's store belong to the signed-in workspace?
-        'needs_decision' drives the upload-vs-hold-off banner."""
-        from vetromar.workspace import auth as ws_auth
-        from vetromar.workspace.engine import BOUND_KEY, binding_status
-
-        status = ws_auth.status()
-        if not status["signed_in"]:
-            raise HTTPException(status_code=401, detail="not signed in")
-        ws_id = status["workspace_id"]
-        return _with_store(
-            lambda s: {
-                "status": binding_status(s, ws_id),
-                "bound_workspace": s.get_replication_state(BOUND_KEY),
-                "workspace_id": ws_id,
-            }
-        )
-
-    @app.post("/api/workspace/binding")
-    def workspace_binding_decide(body: BindingAction) -> dict:
-        from vetromar.workspace import auth as ws_auth
-        from vetromar.workspace.engine import rebind_and_upload
-
-        if body.action != "upload":
-            raise HTTPException(status_code=400, detail="unknown binding action")
-        status = ws_auth.status()
-        if not status["signed_in"]:
-            raise HTTPException(status_code=401, detail="not signed in")
-        ws_id = status["workspace_id"]
-        requeued = _with_store(lambda s: rebind_and_upload(s, ws_id))
-        return {"ok": True, "requeued": requeued}
-
-    @app.post("/api/workspace/delete")
-    def workspace_delete(body: ConfirmPassword) -> dict:
-        """Admin-only on the cloud side. On success the local session is
-        cleared; the LOCAL knowledge store is deliberately untouched."""
-        from vetromar.workspace import auth as ws_auth
-
-        _workspace_call(lambda c: c.delete_workspace(body.password))
-        ws_auth.sign_out()
-        return {"deleted": True}
-
-    @app.post("/api/account/delete")
-    def account_delete(body: ConfirmPassword) -> dict:
-        from vetromar.workspace import auth as ws_auth
-
-        _workspace_call(lambda c: c.delete_account(body.password))
-        ws_auth.sign_out()
-        return {"deleted": True}
-
-    @app.post("/api/workspace/sync")
-    def workspace_sync() -> dict:
-        from vetromar.ui_server.workspace_jobs import start_workspace_sync_job
-
-        config = load_config()
-        if not config.cloud_token:
-            raise HTTPException(status_code=401, detail="not signed in")
-        job, started = start_workspace_sync_job(_JOBS)
+        job, started = start_graph_sync_job(_JOBS, graph_id)
         return {"job_id": job.id, "already_running": not started}
 
     # -- sources (the M10 connect/sync flow; engine calls go straight to ------

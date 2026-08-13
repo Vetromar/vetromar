@@ -1,6 +1,11 @@
-"""Signup, login, me, invites. The unauthenticated credential routes are
+"""Keypair auth, workspaces, invites, roles.
 
-rate-limited per client IP (see security.RateLimiter — deliberately minimal).
+Sign-in is a signed challenge: POST /v1/auth/challenge hands out a
+single-use nonce for a public key; POST /v1/auth/verify trades the signed
+nonce for a bearer token (only for enrolled principals). Enrollment happens
+exclusively through invites — accepting one also consumes a challenge, so
+possession of the private key is proven at the door. The unauthenticated
+routes are rate-limited per client IP (security.RateLimiter).
 """
 
 from __future__ import annotations
@@ -12,29 +17,39 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .deps import AuthContext, current_auth, get_session, me_payload, require_admin
+from .deps import (
+    AuthContext,
+    current_principal,
+    get_session,
+    me_payload,
+    membership_payload,
+    require_admin,
+    require_host,
+)
 from .models import (
+    CHALLENGE_MINUTES,
     INVITE_DAYS,
     TOKEN_DAYS,
+    AuthChallenge,
     Invite,
     Membership,
-    ResetToken,
+    Principal,
     Token,
-    User,
     Workspace,
     new_id,
     utcnow,
 )
 from .security import (
-    MIN_PASSWORD_LENGTH,
     RateLimiter,
     generate_token,
-    hash_password,
     hash_token,
-    verify_password,
+    verify_signature,
 )
 
 router = APIRouter()
+
+MAX_PUBLIC_KEY_LEN = 64
+HANDLE_MAX = 40
 
 
 def _rate_limit(request: Request) -> None:
@@ -48,27 +63,23 @@ def _rate_limit(request: Request) -> None:
         raise HTTPException(429, "too many attempts, slow down")
 
 
-def _normalize_email(email: str) -> str:
-    email = email.strip().lower()
-    local, _, domain = email.partition("@")
-    if not local or "." not in domain:
-        raise HTTPException(400, "invalid email address")
-    return email
-
-
-def _check_password(password: str) -> None:
-    if len(password) < MIN_PASSWORD_LENGTH:
+def _normalize_handle(handle: str) -> str:
+    handle = handle.strip().lstrip("@").lower()
+    if not handle or len(handle) > HANDLE_MAX:
+        raise HTTPException(400, "handle must be 1-40 characters")
+    if not all(c.isalnum() or c in "-_." for c in handle):
         raise HTTPException(
-            400, f"password must be at least {MIN_PASSWORD_LENGTH} characters"
+            400, "handle may only contain letters, digits, dashes, dots, underscores"
         )
+    return handle
 
 
-def _issue_token(session: Session, user: User) -> str:
+def _issue_token(session: Session, principal: Principal) -> str:
     raw = generate_token()
     session.add(
         Token(
             id=new_id("tok"),
-            user_id=user.id,
+            user_id=principal.id,
             token_hash=hash_token(raw),
             expires_at=utcnow() + timedelta(days=TOKEN_DAYS),
         )
@@ -76,16 +87,39 @@ def _issue_token(session: Session, user: User) -> str:
     return raw
 
 
+def consume_challenge(session: Session, public_key: str, nonce: str, signature: str) -> None:
+    """Verify + burn a challenge: the caller proved possession of the key.
+    Shared by sign-in, invite acceptance, and destructive-action proofs."""
+    challenge = session.scalar(
+        select(AuthChallenge).where(AuthChallenge.nonce_hash == hash_token(nonce))
+    )
+    now = utcnow()
+    if (
+        challenge is None
+        or challenge.expires_at <= now
+        or challenge.used_at is not None
+        or challenge.public_key != public_key
+    ):
+        raise HTTPException(401, "challenge is invalid or has expired")
+    if not verify_signature(public_key, nonce, signature):
+        raise HTTPException(401, "signature does not verify")
+    challenge.used_at = now
+
+
+class ChallengeBody(BaseModel):
+    public_key: str = Field(min_length=1, max_length=MAX_PUBLIC_KEY_LEN)
+
+
+class VerifyBody(BaseModel):
+    public_key: str = Field(min_length=1, max_length=MAX_PUBLIC_KEY_LEN)
+    nonce: str
+    signature: str
+
+
 class CreateWorkspace(BaseModel):
-    workspace_name: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=200)
-    email: str
-    password: str
-
-
-class Login(BaseModel):
-    email: str
-    password: str
+    handle: str = Field(min_length=1, max_length=HANDLE_MAX)
+    display_name: str = Field(min_length=1, max_length=200)
 
 
 class CreateInvite(BaseModel):
@@ -94,67 +128,94 @@ class CreateInvite(BaseModel):
 
 class AcceptInvite(BaseModel):
     token: str
-    name: str = Field(min_length=1, max_length=200)
-    email: str
-    password: str
+    public_key: str = Field(min_length=1, max_length=MAX_PUBLIC_KEY_LEN)
+    nonce: str
+    signature: str
+    handle: str = Field(min_length=1, max_length=HANDLE_MAX)
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class ChangeRole(BaseModel):
+    role: str
+
+
+@router.post("/v1/auth/challenge", status_code=201)
+def create_challenge(
+    body: ChallengeBody, request: Request, session: Session = Depends(get_session)
+):
+    _rate_limit(request)
+    raw = generate_token()
+    session.add(
+        AuthChallenge(
+            id=new_id("chl"),
+            public_key=body.public_key,
+            nonce_hash=hash_token(raw),
+            expires_at=utcnow() + timedelta(minutes=CHALLENGE_MINUTES),
+        )
+    )
+    # The raw nonce is returned exactly once; only its hash is stored.
+    return {"nonce": raw}
+
+
+@router.post("/v1/auth/verify")
+def verify_challenge(
+    body: VerifyBody, request: Request, session: Session = Depends(get_session)
+):
+    _rate_limit(request)
+    consume_challenge(session, body.public_key, body.nonce, body.signature)
+    principal = session.scalar(
+        select(Principal).where(Principal.public_key == body.public_key)
+    )
+    if principal is None or not principal.is_active:
+        # The key is real but unknown here — enrollment goes through invites.
+        raise HTTPException(403, "this key is not enrolled on this server")
+    raw = _issue_token(session, principal)
+    return {"token": raw, **me_payload(session, principal)}
+
+
+@router.get("/v1/me")
+def me(
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+):
+    return me_payload(session, principal)
+
+
+@router.get("/v1/workspaces")
+def list_workspaces(
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+):
+    return {"workspaces": me_payload(session, principal)["workspaces"]}
 
 
 @router.post("/v1/workspaces", status_code=201)
 def create_workspace(
-    body: CreateWorkspace, request: Request, session: Session = Depends(get_session)
+    body: CreateWorkspace,
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
 ):
-    _rate_limit(request)
-    _check_password(body.password)
-    email = _normalize_email(body.email)
-    if session.scalar(select(User).where(User.email == email)):
-        raise HTTPException(400, "an account with this email already exists")
-    user = User(
-        id=new_id("usr"),
-        email=email,
-        password_hash=hash_password(body.password),
-        name=body.name.strip(),
-    )
-    workspace = Workspace(id=new_id("ws"), name=body.workspace_name.strip())
+    # Only the server owner creates graphs here — hosting a graph IS running
+    # (or renting) the server. Members join through invites.
+    if not principal.is_owner:
+        raise HTTPException(403, "only the server owner can create graphs here")
+    workspace = Workspace(id=new_id("ws"), name=body.name.strip())
     membership = Membership(
-        id=new_id("mem"), user_id=user.id, workspace_id=workspace.id, role="admin"
+        id=new_id("mem"),
+        user_id=principal.id,
+        workspace_id=workspace.id,
+        role="host",
+        handle=_normalize_handle(body.handle),
+        display_name=body.display_name.strip(),
     )
     # Flush parents before FK'd rows: without ORM relationships SQLAlchemy
     # gives no cross-table insert ordering, and Postgres enforces the FKs
     # at flush (SQLite's default-off enforcement masked this).
-    session.add_all([user, workspace])
+    session.add(workspace)
     session.flush()
     session.add(membership)
-    raw = _issue_token(session, user)
     session.flush()
-    auth = AuthContext(user=user, workspace=workspace, membership=membership)
-    return {"token": raw, **me_payload(auth)}
-
-
-@router.post("/v1/auth/login")
-def login(body: Login, request: Request, session: Session = Depends(get_session)):
-    _rate_limit(request)
-    email = _normalize_email(body.email)
-    user = session.scalar(select(User).where(User.email == email))
-    if user is None or not user.is_active or not verify_password(
-        user.password_hash, body.password
-    ):
-        raise HTTPException(401, "invalid email or password")
-    membership = session.scalar(
-        select(Membership).where(
-            Membership.user_id == user.id, Membership.is_active.is_(True)
-        )
-    )
-    if membership is None:
-        raise HTTPException(403, "no active workspace membership")
-    workspace = session.get(Workspace, membership.workspace_id)
-    raw = _issue_token(session, user)
-    auth = AuthContext(user=user, workspace=workspace, membership=membership)
-    return {"token": raw, **me_payload(auth)}
-
-
-@router.get("/v1/me")
-def me(auth: AuthContext = Depends(current_auth)):
-    return me_payload(auth)
+    return membership_payload(membership, workspace)
 
 
 @router.post("/v1/invites", status_code=201)
@@ -165,6 +226,8 @@ def create_invite(
 ):
     if body.role not in ("member", "admin"):
         raise HTTPException(400, "role must be 'member' or 'admin'")
+    if body.role == "admin" and auth.role != "host":
+        raise HTTPException(403, "only the host can mint admin invites")
     raw = generate_token()
     expires = utcnow() + timedelta(days=INVITE_DAYS)
     session.add(
@@ -173,7 +236,7 @@ def create_invite(
             workspace_id=auth.workspace.id,
             token_hash=hash_token(raw),
             role=body.role,
-            created_by=auth.user.id,
+            created_by=auth.principal.id,
             expires_at=expires,
         )
     )
@@ -192,7 +255,6 @@ def accept_invite(
     body: AcceptInvite, request: Request, session: Session = Depends(get_session)
 ):
     _rate_limit(request)
-    _check_password(body.password)
     invite = session.scalar(
         select(Invite).where(Invite.token_hash == hash_token(body.token))
     )
@@ -201,53 +263,83 @@ def accept_invite(
         raise HTTPException(400, "invite link is invalid or has expired")
     if invite.accepted_at is not None:
         raise HTTPException(400, "invite link has already been used")
-    email = _normalize_email(body.email)
-    if session.scalar(select(User).where(User.email == email)):
-        raise HTTPException(400, "an account with this email already exists")
+    # Enrollment proves key possession — same challenge flow as sign-in.
+    consume_challenge(session, body.public_key, body.nonce, body.signature)
+
+    principal = session.scalar(
+        select(Principal).where(Principal.public_key == body.public_key)
+    )
+    if principal is None:
+        principal = Principal(id=new_id("pcp"), public_key=body.public_key)
+        session.add(principal)
+        session.flush()
+    elif not principal.is_active:
+        raise HTTPException(403, "identity disabled")
+
+    existing = session.scalar(
+        select(Membership).where(
+            Membership.user_id == principal.id,
+            Membership.workspace_id == invite.workspace_id,
+        )
+    )
+    if existing is not None and existing.is_active:
+        raise HTTPException(400, "you are already a member of this graph")
+
+    handle = _normalize_handle(body.handle)
+    handle_taken = session.scalar(
+        select(Membership.id).where(
+            Membership.workspace_id == invite.workspace_id,
+            Membership.handle == handle,
+        )
+    )
+    if handle_taken is not None and (existing is None or existing.handle != handle):
+        raise HTTPException(400, f"the handle @{handle} is taken in this graph")
+
     workspace = session.get(Workspace, invite.workspace_id)
-    user = User(
-        id=new_id("usr"),
-        email=email,
-        password_hash=hash_password(body.password),
-        name=body.name.strip(),
-    )
-    membership = Membership(
-        id=new_id("mem"), user_id=user.id, workspace_id=workspace.id, role=invite.role
-    )
+    if existing is not None:
+        # Re-joining after removal: reactivate the old seat under the new name.
+        existing.is_active = True
+        existing.role = invite.role
+        existing.handle = handle
+        existing.display_name = body.display_name.strip()
+        membership = existing
+    else:
+        membership = Membership(
+            id=new_id("mem"),
+            user_id=principal.id,
+            workspace_id=workspace.id,
+            role=invite.role,
+            handle=handle,
+            display_name=body.display_name.strip(),
+        )
+        session.add(membership)
     invite.accepted_at = now
-    invite.accepted_by = user.id
-    # Same parent-first flush as create_workspace (Postgres FK ordering).
-    session.add(user)
+    invite.accepted_by = principal.id
     session.flush()
-    session.add(membership)
-    session.flush()
-    return {"workspace": workspace.name, "email": email}
+    # A session token comes back with enrollment — joining IS signing in.
+    raw = _issue_token(session, principal)
+    return {"token": raw, **membership_payload(membership, workspace)}
 
 
-class ResetConfirm(BaseModel):
-    token: str
-    password: str
-
-
-@router.post("/v1/auth/reset-confirm")
-def reset_confirm(
-    body: ResetConfirm, request: Request, session: Session = Depends(get_session)
+@router.post("/v1/members/{principal_id}/role")
+def change_role(
+    principal_id: str,
+    body: ChangeRole,
+    auth: AuthContext = Depends(require_host),
+    session: Session = Depends(get_session),
 ):
-    _rate_limit(request)
-    _check_password(body.password)
-    reset = session.scalar(
-        select(ResetToken).where(ResetToken.token_hash == hash_token(body.token))
+    if body.role not in ("member", "admin"):
+        raise HTTPException(400, "role must be 'member' or 'admin'")
+    membership = session.scalar(
+        select(Membership).where(
+            Membership.workspace_id == auth.workspace.id,
+            Membership.user_id == principal_id,
+            Membership.is_active.is_(True),
+        )
     )
-    now = utcnow()
-    if reset is None or reset.expires_at <= now or reset.used_at is not None:
-        raise HTTPException(400, "reset link is invalid or has expired")
-    user = session.get(User, reset.user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(400, "reset link is invalid or has expired")
-    user.password_hash = hash_password(body.password)
-    reset.used_at = now
-    # The point of a reset: every existing session dies with the old password.
-    from sqlalchemy import delete
-
-    session.execute(delete(Token).where(Token.user_id == user.id))
-    return {"ok": True}
+    if membership is None:
+        raise HTTPException(404, "no active member with that id")
+    if membership.role == "host":
+        raise HTTPException(400, "the host role cannot be changed")
+    membership.role = body.role
+    return membership_payload(membership, auth.workspace)

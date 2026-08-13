@@ -94,23 +94,8 @@ export const api = {
   onboardingStatus: () => request("/api/onboarding"),
   onboardingUpdate: (body) => jsonPost("/api/onboarding", body),
   mcpInfo: () => request("/api/mcp"),
-  // Workspace (accounts + multi-device sync — the M14 flow)
-  workspaceStatus: (refresh = false) => request("/api/workspace" + qs({ refresh })),
-  workspaceSignIn: (email, password) => jsonPost("/api/workspace/signin", { email, password }),
-  workspaceSignOut: () => request("/api/workspace/signout", { method: "POST" }),
-  workspaceMembers: () => request("/api/workspace/members"),
-  workspaceRemoveMember: (userId) =>
-    request("/api/workspace/members/" + userId, { method: "DELETE" }),
-  workspaceInvite: (role = "member") => jsonPost("/api/workspace/invites", { role }),
-  workspaceMemberResetLink: (userId) =>
-    request("/api/workspace/members/" + userId + "/reset-link", { method: "POST" }),
-  workspaceServerUrl: (url) => jsonPost("/api/workspace/server-url", { url }),
-  workspaceOpenSignup: () => request("/api/workspace/open-signup", { method: "POST" }),
-  workspaceSync: () => request("/api/workspace/sync", { method: "POST" }),
-  workspaceBinding: () => request("/api/workspace/binding"),
-  workspaceBindingUpload: () => jsonPost("/api/workspace/binding", { action: "upload" }),
-  workspaceDelete: (password) => jsonPost("/api/workspace/delete", { password }),
-  accountDelete: (password) => jsonPost("/api/account/delete", { password }),
+  // Identity (the local keypair's public half)
+  identity: () => request("/api/identity"),
   // Sources (connect + sync — the M10 flow)
   sourcesCatalog: () => request("/api/sources/catalog"),
   sourcesList: () => request("/api/sources"),
@@ -126,6 +111,7 @@ export const api = {
     request("/api/graphs/" + id + qs({ delete_files: deleteFiles }), { method: "DELETE" }),
   graphNote: (graphId, text, title) =>
     jsonPost("/api/graphs/" + graphId + "/note", { text, title: title || null }),
+  graphSync: (graphId) => request("/api/graphs/" + graphId + "/sync", { method: "POST" }),
   // Store browsing (read-only; scoped to the active graph)
   storeSearch: (params) => request("/api/store/search" + qs(withGraph(params))),
   storeUnit: (id) => request("/api/store/units/" + id + qs(withGraph())),

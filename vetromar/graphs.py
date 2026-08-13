@@ -61,6 +61,12 @@ class GraphInfo:
     handle: Optional[str] = None
     display_name: Optional[str] = None
     joined_at: Optional[str] = None
+    last_synced_at: Optional[str] = None
+
+    @property
+    def synced(self) -> bool:
+        """Whether this graph is connected to a host (vs local-only)."""
+        return bool(self.host_url and self.workspace_id)
 
     def to_dict(self) -> dict:
         return asdict(self)

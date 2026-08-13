@@ -37,6 +37,18 @@
   let autoSyncSaved = $state(false);
   let autoSyncErr = $state(null);
 
+  // Identity: the local keypair's public half (generated on first read).
+  let identity = $state(null);
+  let identityErr = $state(null);
+  let identityCopied = $state(false);
+
+  async function copyIdentity() {
+    try {
+      await navigator.clipboard.writeText(identity.public_key);
+      identityCopied = true;
+    } catch {}
+  }
+
   // Transcription tier: an explicit Auto / Local / Deepgram choice.
   let transcription = $state(null); // GET /api/settings/transcription snapshot
   let transMode = $state("auto");
@@ -68,6 +80,11 @@
       autoSyncInterval = s.interval_minutes;
     } catch {
       // server briefly unreachable — the section keeps its defaults
+    }
+    try {
+      identity = await api.identity();
+    } catch (e) {
+      identityErr = e.message;
     }
     try {
       provider = await api.providerGet();
@@ -522,6 +539,27 @@
     {#if autoSyncErr}<p class="error">{autoSyncErr}</p>{/if}
   </div>
 
+  <div class="stack" style="margin-top: 8px">
+    <h3>Identity</h3>
+    <p class="muted">
+      Your identity is a key generated on this computer — no account, no
+      password. Graph hosts know you by its public half; a VPS host enrolls
+      you with <code>set-owner</code> using this key.
+    </p>
+    {#if identityErr}
+      <p class="error">{identityErr}</p>
+    {:else if identity}
+      <div class="row" style="gap:10px; align-items:center">
+        <code class="pubkey">{identity.public_key}</code>
+        <button onclick={copyIdentity}>{identityCopied ? "Copied" : "Copy"}</button>
+      </div>
+      <p class="muted" style="font-size:12px">
+        The private key never leaves {identity.key_path}. Back that file up —
+        it IS your identity.
+      </p>
+    {/if}
+  </div>
+
   {#if onReplayTour}
     <div class="stack" style="margin-top: 8px">
       <h3>Onboarding</h3>
@@ -540,6 +578,14 @@
 </div>
 
 <style>
+  .pubkey {
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 2px solid var(--border);
+    background: var(--panel-2);
+    word-break: break-all;
+    user-select: all;
+  }
   .model-list {
     list-style: none;
     padding: 0;

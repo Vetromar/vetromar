@@ -25,13 +25,17 @@ class PushBody(BaseModel):
 
 
 def _touch_device(session: Session, auth: AuthContext, device_id: str) -> None:
-    device = session.scalar(select(Device).where(Device.device_id == device_id))
+    device = session.scalar(
+        select(Device).where(
+            Device.workspace_id == auth.workspace.id, Device.device_id == device_id
+        )
+    )
     if device is None:
         session.add(
             Device(
                 id=new_id("dev"),
                 workspace_id=auth.workspace.id,
-                user_id=auth.user.id,
+                user_id=auth.principal.id,
                 device_id=device_id,
             )
         )
@@ -82,7 +86,7 @@ def push(
                 row_id=change.row_id,
                 payload=json.dumps(change.payload),
                 origin_device_id=body.device_id,
-                origin_user_id=auth.user.id,
+                origin_user_id=auth.principal.id,
                 recorded_at=change.recorded_at,
             )
         )

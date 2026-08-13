@@ -23,7 +23,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 TOKEN_DAYS = 30
 INVITE_DAYS = 14
-RESET_TOKEN_MINUTES = 60
+CHALLENGE_MINUTES = 2
+
+# host: the graph's creator (the person whose machine/server this is) —
+# immutable, full control. admin: can invite members and moderate.
+# member: reads and contributes.
+ROLES = ("host", "admin", "member")
 
 
 def utcnow() -> datetime:
@@ -38,15 +43,21 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(Base):
-    __tablename__ = "users"
+class Principal(Base):
+    """An identity this server knows: an Ed25519 public key. No emails, no
+    passwords — enrollment happens via invite + a signed challenge, so a row
+    here means the holder of the key proved possession at least once.
+    `is_owner` marks the server operator: the only principal who may create
+    workspaces (set by host-mode bootstrap or `python -m cloud set-owner`)."""
+
+    __tablename__ = "principals"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(256))
-    name: Mapped[str] = mapped_column(String(200))
+    # Raw 32-byte Ed25519 public key, urlsafe-base64 (43 chars unpadded).
+    public_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_owner: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Workspace(Base):
@@ -58,15 +69,27 @@ class Workspace(Base):
 
 
 class Membership(Base):
+    """A principal's seat in a workspace, with the identity they claimed
+    there (handle + display name are per-workspace — like knowing someone
+    by a different name in each community). Column name `user_id` predates
+    the keypair pivot; it references principals."""
+
     __tablename__ = "memberships"
-    __table_args__ = (UniqueConstraint("user_id", "workspace_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id"),
+        UniqueConstraint("workspace_id", "handle"),
+    )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(40), ForeignKey("principals.id"), index=True
+    )
     workspace_id: Mapped[str] = mapped_column(
         String(40), ForeignKey("workspaces.id"), index=True
     )
-    role: Mapped[str] = mapped_column(String(10))  # 'admin' | 'member'
+    role: Mapped[str] = mapped_column(String(10))  # see ROLES
+    handle: Mapped[str] = mapped_column(String(40))
+    display_name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -75,11 +98,28 @@ class Token(Base):
     __tablename__ = "tokens"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(40), ForeignKey("principals.id"), index=True
+    )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AuthChallenge(Base):
+    """Sign-in nonces: single-use, short-lived, stored hashed (the same
+    token discipline as sessions/invites). Issued to a public key; consumed
+    by /v1/auth/verify, invite acceptance, or a destructive-action proof."""
+
+    __tablename__ = "auth_challenges"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    public_key: Mapped[str] = mapped_column(String(64), index=True)
+    nonce_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Invite(Base):
@@ -91,36 +131,27 @@ class Invite(Base):
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(10), default="member")
-    created_by: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"))
+    created_by: Mapped[str] = mapped_column(String(40), ForeignKey("principals.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     accepted_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
-class ResetToken(Base):
-    """Password-reset links: single-use, short-lived, stored hashed (same
-    token discipline as sessions/invites)."""
-
-    __tablename__ = "reset_tokens"
-
-    id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-
 class Device(Base):
+    """A device syncing a workspace. One physical installation syncing N
+    workspaces on this server gets N rows — device_id is unique per
+    workspace, not globally (the multi-graph reality)."""
+
     __tablename__ = "devices"
+    __table_args__ = (UniqueConstraint("workspace_id", "device_id"),)
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
         String(40), ForeignKey("workspaces.id"), index=True
     )
-    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("users.id"))
-    device_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(40), ForeignKey("principals.id"))
+    device_id: Mapped[str] = mapped_column(String(80), index=True)
     name: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

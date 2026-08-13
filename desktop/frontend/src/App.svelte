@@ -9,14 +9,12 @@
   import Capture from "./lib/Capture.svelte";
   import Knowledge from "./lib/Knowledge.svelte";
   import Sources from "./lib/Sources.svelte";
-  import Workspace from "./lib/Workspace.svelte";
   import Logo from "./lib/Logo.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import GettingStarted from "./lib/GettingStarted.svelte";
 
-  let view = $state("loading"); // loading | setup | capture | knowledge | sources | workspace
+  let view = $state("loading"); // loading | setup | capture | knowledge | sources
   let health = $state(null);
-  let workspace = $state(null); // GET /api/workspace snapshot
   let loadError = $state(null);
   let onboarding = $state(null); // GET /api/onboarding snapshot
   let tourOpen = $state(false);
@@ -28,12 +26,6 @@
     try {
       loadError = null;
       health = await api.health();
-      // Accounts are optional: solo/local is the default, and the Workspace
-      // tab owns connecting to a server. Fail-soft — a broken status call
-      // must not block the app.
-      try {
-        workspace = await api.workspaceStatus();
-      } catch {}
       if (gotoSetup) view = "setup";
       else if (view === "loading") view = health.ready ? "capture" : "setup";
       await refreshOnboarding();
@@ -86,19 +78,13 @@
     refreshOnboarding();
   });
 
-  function onWorkspaceStatus(status) {
-    // The Workspace tab refreshes its own session snapshot on every visit —
-    // adopt it here so the header can't go stale.
-    workspace = status;
-  }
-
   function onSetupDone() {
     view = "capture";
     refresh();
   }
 
   const inApp = $derived(
-    view === "capture" || view === "knowledge" || view === "sources" || view === "workspace"
+    view === "capture" || view === "knowledge" || view === "sources"
   );
 
   // Relaunching mid-job would kill a live sync/capture AND risk the swapped
@@ -169,7 +155,6 @@
       <button class:active={view === "capture"} onclick={() => (view = "capture")}>Capture</button>
       <button class:active={view === "knowledge"} onclick={() => (view = "knowledge")}>Knowledge</button>
       <button class:active={view === "sources"} onclick={() => (view = "sources")}>Sources</button>
-      <button class:active={view === "workspace"} onclick={() => (view = "workspace")}>Workspace</button>
     </nav>
   {/if}
   <div class="header-right">
@@ -180,10 +165,8 @@
         <span class="spinner"></span> syncing…
       </button>
     {/if}
-    {#if workspaceJob.running && view !== "workspace"}
-      <button class="activity-badge" onclick={() => (view = "workspace")}>
-        <span class="spinner"></span> workspace…
-      </button>
+    {#if workspaceJob.running}
+      <span class="activity-badge"><span class="spinner"></span> graph sync…</span>
     {/if}
     {#if captureJob.running && view !== "capture"}
       <button class="activity-badge" onclick={() => (view = "capture")}>
@@ -246,19 +229,12 @@
       <Knowledge />
     {/key}
   {:else if view === "sources"}
-    <Sources {health} signedIn={workspace?.signed_in} />
-  {:else if view === "workspace"}
-    <Workspace onStatus={onWorkspaceStatus} />
+    <Sources {health} />
   {/if}
 </main>
 
 {#if tourOpen}
-  <Onboarding
-    role={workspace?.role}
-    workspaceName={workspace?.workspace}
-    onClose={closeTour}
-    onNavigate={tourNavigate}
-  />
+  <Onboarding onClose={closeTour} onNavigate={tourNavigate} />
 {/if}
 {#if updateBannerOpen}
   <UpdateReady
@@ -273,7 +249,6 @@
 {#if inApp && onboarding && !onboarding.checklist_dismissed && !tourOpen && !updateBannerOpen}
   <GettingStarted
     status={onboarding}
-    isAdmin={workspace?.role === "admin"}
     onNavigate={(t) => (view = t)}
     onReplayTour={() => (tourOpen = true)}
     onDismiss={dismissChecklist}

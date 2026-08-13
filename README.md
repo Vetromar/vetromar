@@ -17,8 +17,10 @@ run fully offline.
   per-source integration code, ever.
 - **Query** it from your own agent: `vetromar serve` exposes the graph over
   MCP (hybrid semantic + full-text search, time travel, provenance, edges).
-- **Sync** across your team's devices through a workspace server you
-  self-host.
+- **Share** knowledge in shared graphs hosted by whoever creates them — a
+  friend's always-on machine or a small server, never central
+  infrastructure. Your identity is a local keypair; no accounts, no
+  passwords.
 
 ## Install (macOS, Apple Silicon)
 
@@ -41,14 +43,14 @@ through any Vetromar service:
 Optional: a [Deepgram](https://deepgram.com) key for fast cloud
 transcription (otherwise transcription runs locally).
 
-## Self-host the workspace server (team sync)
+## Host shared graphs (headless)
 
-Accounts, invites, and multi-device sync run on a small server you host —
-see **[docs/self-hosting.md](docs/self-hosting.md)**:
+Shared graphs sync through a host: the app on an always-on machine, or a
+headless server anywhere — see **[docs/self-hosting.md](docs/self-hosting.md)**:
 
 ```sh
 docker compose up -d
-# then point the app's sign-in screen at http://localhost:8787
+docker compose exec server python -m cloud set-owner <your-public-key>
 ```
 
 ## Development

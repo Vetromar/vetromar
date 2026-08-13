@@ -2,7 +2,7 @@
   import { api } from "../api.js";
   import { sourcesJob } from "./jobs.svelte.js";
 
-  let { health, signedIn = false } = $props();
+  let { health } = $props();
 
   let catalog = $state([]);
   let sources = $state([]);
@@ -178,13 +178,6 @@
     Connect Vetromar to your stack — one browser consent click per source, no
     tokens or config files. Sync pulls what's new into the knowledge store.
   </p>
-  {#if signedIn}
-    <p class="muted" style="font-size:13px">
-      Sources sync on this device and share to your whole workspace — connect
-      each source on only one computer to avoid duplicate knowledge.
-    </p>
-  {/if}
-
   {#if sources.length}
     <div>
       <div class="section-title">Connected</div>

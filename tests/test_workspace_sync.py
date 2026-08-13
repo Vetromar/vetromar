@@ -14,6 +14,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from cloud.app import create_app
+from tests.cloud_helpers import make_owner, new_identity
 from vetromar.ingest.manual import (
     add_draft,
     add_source_episode,
@@ -39,30 +40,42 @@ def cloud():
     )
     app = create_app(engine=engine)
 
-    def make_client(token=None):
+    def make_client(token=None, workspace_id=None):
         # TestClient IS a sync httpx.Client over the ASGI app — the exact
         # transport-injection seam CloudClient exposes for tests.
-        return CloudClient(base_url="http://testserver", token=token, http=TestClient(app))
+        return CloudClient(
+            base_url="http://testserver",
+            token=token,
+            workspace_id=workspace_id,
+            http=TestClient(app),
+        )
 
     yield {"make_client": make_client, "engine": engine}
 
 
 @pytest.fixture()
 def team(cloud):
-    """A workspace with two signed-in member clients (admin + member)."""
+    """A graph with two signed-in member clients (host + member), keypair-era."""
+    host_identity, member_identity = new_identity(), new_identity()
+    make_owner(cloud["engine"], host_identity)
+
     bootstrap = cloud["make_client"]()
-    signup = bootstrap.signup("Acme", "Ada", "ada@acme.test", "hunter22hunter22")
-    invite = CloudClient(
-        base_url="x", http=bootstrap._http, token=signup["token"]
-    ).create_invite()
-    bootstrap.accept_invite(invite["token"], "Mo", "mo@acme.test", "memberpass123")
-    member = cloud["make_client"]()
-    login = member.login("mo@acme.test", "memberpass123")
+    bootstrap.login_with_key(host_identity)
+    ws = bootstrap.create_workspace("Acme", "ada", "Ada")
+    workspace_id = ws["workspace_id"]
+
+    host = cloud["make_client"](workspace_id=workspace_id)
+    host.login_with_key(host_identity)
+    invite = host.create_invite()
+    member = cloud["make_client"](workspace_id=workspace_id)
+    member.accept_invite(invite["token"], member_identity, "mo", "Mo")
     return {
-        "admin": cloud["make_client"](token=signup["token"]),
-        "member": cloud["make_client"](token=login["token"]),
-        "workspace_id": signup["workspace"]["id"],
+        "admin": host,
+        "member": member,
+        "workspace_id": workspace_id,
         "engine": cloud["engine"],
+        "host_identity": host_identity,
+        "member_identity": member_identity,
     }
 
 
@@ -281,15 +294,15 @@ def test_delete_workspace_then_rebind_reuploads_full_graph(cloud, team):
     ep, unit, entity = seed_capture(a)
     sync_workspace(a, team["admin"], "dev-a", workspace_id=team["workspace_id"])
 
-    # Admin deletes the workspace; this test is about replication.
-    team["admin"].delete_workspace("hunter22hunter22")
+    # Host deletes the graph; this test is about replication.
+    team["admin"].delete_workspace(team["host_identity"])
 
-    # Fresh signup — same person, new workspace (the email is free again).
-    fresh_signup = cloud["make_client"]().signup(
-        "Acme Reborn", "Ada", "ada@acme.test", "hunter22hunter22"
-    )
-    new_ws = fresh_signup["workspace"]["id"]
-    new_client = cloud["make_client"](token=fresh_signup["token"])
+    # Same owner spins up a new graph on the same server.
+    reborn = cloud["make_client"]()
+    reborn.login_with_key(team["host_identity"])
+    new_ws = reborn.create_workspace("Acme Reborn", "ada", "Ada")["workspace_id"]
+    new_client = cloud["make_client"](workspace_id=new_ws)
+    new_client.login_with_key(team["host_identity"])
 
     # The old store refuses to sync until the human decides…
     from vetromar.workspace.client import WorkspaceBindingError

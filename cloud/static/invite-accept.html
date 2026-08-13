@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Join your team — Vetromar</title>
+  <title>You're invited — Vetromar</title>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
@@ -16,97 +16,55 @@
       color: light-dark(#1E1A12, #F7F1E3); padding: 24px;
     }
     .card {
-      width: 100%; max-width: 420px; padding: 32px;
+      width: 100%; max-width: 460px; padding: 32px;
       background: light-dark(#F7F1E3, #262117);
       border: 2px solid light-dark(#1E1A12, #B8AF9B);
     }
     h1 { margin: 0 0 8px; font-family: "Bricolage Grotesque", sans-serif;
          font-weight: 800; letter-spacing: -0.03em; font-size: 1.75rem; }
     .sub { margin: 0 0 20px; color: light-dark(#59503F, #B8AF9B); font-size: 0.95rem; }
-    label { display: block; margin: 14px 0 4px;
-            font: 600 0.72rem/1.5 "IBM Plex Mono", ui-monospace, monospace;
-            text-transform: uppercase; letter-spacing: 0.06em;
-            color: light-dark(#59503F, #B8AF9B); }
-    input {
-      width: 100%; padding: 10px 12px; font: inherit;
+    ol { margin: 0 0 20px; padding-left: 20px; }
+    li { margin: 8px 0; }
+    .link {
+      font: 600 0.8rem/1.6 "IBM Plex Mono", ui-monospace, monospace;
+      word-break: break-all; padding: 12px;
+      background: light-dark(#EDE5CE, #1E1A12);
       border: 2px solid light-dark(#1E1A12, #B8AF9B);
-      background: light-dark(#EDE5CE, #14110B); color: inherit;
     }
     button {
-      margin-top: 20px; width: 100%; padding: 11px;
-      border: 2px solid #1E1A12; background: #00C46A; color: #1E1A12;
-      font: 600 0.82rem/1.5 "IBM Plex Mono", ui-monospace, monospace;
-      text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer;
+      margin-top: 12px; width: 100%; padding: 12px; cursor: pointer;
+      font: 600 0.85rem "IBM Plex Mono", ui-monospace, monospace;
+      background: light-dark(#1E1A12, #F7F1E3);
+      color: light-dark(#F7F1E3, #1E1A12);
+      border: 2px solid light-dark(#1E1A12, #F7F1E3);
     }
-    button:disabled { opacity: 0.6; cursor: default; }
-    .form-error { color: light-dark(#C63A1E, #FF3D00); font-size: 0.9rem; min-height: 1.2em; margin: 10px 0 0; }
-    .success { display: none; }
-    .highlight { color: light-dark(#1430FF, #4BF0A5); font-weight: 600; }
+    a { color: inherit; }
   </style>
 </head>
 <body>
-  <div class="card" id="form-card">
-    <h1>Join your team</h1>
+  <div class="card">
+    <h1>You're invited to a shared graph</h1>
     <p class="sub">
-      You've been invited to a Vetromar workspace. Create your account to
-      join — you'll sign into the app with these credentials.
+      Joining happens inside the Vetromar app — your identity is a key that
+      lives on your machine, so there's nothing to type into a website.
     </p>
-    <form id="accept-form">
-      <label for="name">Your name</label>
-      <input id="name" name="name" required autocomplete="name" />
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autocomplete="email" />
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" minlength="8" required
-             autocomplete="new-password" placeholder="at least 8 characters" />
-      <button class="submit" type="submit">Join workspace</button>
-      <p class="form-error" role="alert"></p>
-    </form>
+    <ol>
+      <li>Install Vetromar from <a href="https://vetromar.com">vetromar.com</a> if you haven't.</li>
+      <li>Copy this whole invite link.</li>
+      <li>In the app, open <strong>Graphs → Join a graph</strong> and paste it.</li>
+    </ol>
+    <div class="link" id="invite-link"></div>
+    <button id="copy">Copy invite link</button>
   </div>
-
-  <div class="card success" id="success-card">
-    <h1>You're in 🎉</h1>
-    <p>Your account is part of <span class="highlight" id="ws-name"></span>.</p>
-    <p>
-      Next: open the Vetromar desktop app, point it at this server, and sign
-      in with the email and password you just chose — your team's shared
-      knowledge syncs to your machine automatically.
-    </p>
-  </div>
-
   <script>
-    const token = new URLSearchParams(location.search).get("token");
-    const form = document.getElementById("accept-form");
-    if (!token) {
-      form.querySelector(".form-error").textContent =
-        "This invite link is missing its token — ask your admin for a fresh link.";
-      form.querySelector(".submit").disabled = true;
-    }
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const errorEl = form.querySelector(".form-error");
-      const button = form.querySelector(".submit");
-      errorEl.textContent = "";
-      button.disabled = true;
-      const values = Object.fromEntries(new FormData(form).entries());
+    const link = window.location.href;
+    document.getElementById("invite-link").textContent = link;
+    document.getElementById("copy").addEventListener("click", async () => {
       try {
-        const res = await fetch("/v1/invites/accept", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...values, token }),
-        });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) {
-          const detail = data && data.detail;
-          throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
-        }
-        document.getElementById("ws-name").textContent = data.workspace;
-        document.getElementById("form-card").style.display = "none";
-        document.getElementById("success-card").style.display = "block";
-      } catch (err) {
-        errorEl.textContent = err.message;
-      } finally {
-        button.disabled = false;
+        await navigator.clipboard.writeText(link);
+        document.getElementById("copy").textContent = "Copied";
+      } catch {
+        /* selection fallback: the link is visible above */
       }
     });
   </script>

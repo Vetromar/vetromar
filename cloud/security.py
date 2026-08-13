@@ -1,31 +1,32 @@
-"""Password hashing, token generation, and a minimal login rate limit."""
+"""Keypair signature verification, token generation, and a minimal rate limit.
+
+No passwords anywhere: identity is an Ed25519 public key, and every proof
+is a signature over a server-issued single-use nonce.
+"""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import time
 from collections import defaultdict, deque
 
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
-
-_hasher = PasswordHasher()  # argon2id, library defaults
-
-MIN_PASSWORD_LENGTH = 8
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
-def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def verify_password(password_hash: str, password: str) -> bool:
+def verify_signature(public_key_b64: str, message: str, signature_b64: str) -> bool:
+    """Did the holder of this public key sign this message? Malformed input
+    reads as a failed proof, never a 500."""
     try:
-        return _hasher.verify(password_hash, password)
-    except VerifyMismatchError:
-        return False
-    except Exception:
-        # Malformed hash — treat as a failed login, never a 500.
+        key = Ed25519PublicKey.from_public_bytes(_unb64(public_key_b64))
+        key.verify(_unb64(signature_b64), message.encode())
+        return True
+    except Exception:  # noqa: BLE001 — any failure is "not proven"
         return False
 
 

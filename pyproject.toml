@@ -20,6 +20,9 @@ dependencies = [
     # extra — "queryable by the customer's agent" is the product.
     "fastembed>=0.5",
     "sqlite-vec>=0.1.6",
+    # Identity: the local Ed25519 keypair (vetromar/identity.py) and the
+    # host server's signature verification both ride on this.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +56,6 @@ cloud = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "sqlalchemy>=2.0",
-    "argon2-cffi>=23",
     "psycopg[binary]>=3.1",
     "httpx>=0.27",
 ]

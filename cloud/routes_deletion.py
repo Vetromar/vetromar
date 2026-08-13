@@ -1,9 +1,10 @@
-"""Workspace and account deletion — the explicit destructive path.
+"""Workspace and identity deletion — the explicit destructive path.
 
-An admin can delete the whole workspace (wipes every server-side row, signs
-all members out), and any user can delete their own account. Both re-require
-the caller's password — a stolen session token alone must not be able to
-destroy data. Local knowledge on members' machines is never touched."""
+The host can delete a whole graph (wipes every server-side row, signs all
+members out), and any principal can delete their identity here. Both
+re-require a fresh signed challenge — a stolen session token alone must not
+be able to destroy data. Local knowledge on members' machines is never
+touched."""
 
 from __future__ import annotations
 
@@ -14,46 +15,54 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .deps import AuthContext, current_auth, get_session, require_admin
+from .deps import AuthContext, current_principal, get_session, require_host
 from .models import (
+    AuthChallenge,
     Change,
     Device,
     Invite,
     Membership,
-    ResetToken,
+    Principal,
     Token,
-    User,
     Workspace,
 )
-from .security import verify_password
 
 logger = logging.getLogger("cloud.deletion")
 
 router = APIRouter()
 
 
-class ConfirmPassword(BaseModel):
-    password: str
+class SignedProof(BaseModel):
+    """A freshly signed challenge nonce — the keypair era's 'retype your
+    password'. Mint via /v1/auth/challenge, sign, send both halves here."""
+
+    nonce: str
+    signature: str
 
 
-def _check_password(auth: AuthContext, password: str) -> None:
-    if not verify_password(auth.user.password_hash, password):
-        raise HTTPException(403, "password is incorrect")
+def _check_proof(session: Session, principal: Principal, proof: SignedProof) -> None:
+    from .routes_auth import consume_challenge
+
+    consume_challenge(session, principal.public_key, proof.nonce, proof.signature)
 
 
-def _delete_user_rows(session: Session, user_id: str) -> None:
-    session.execute(delete(Token).where(Token.user_id == user_id))
-    session.execute(delete(ResetToken).where(ResetToken.user_id == user_id))
-    session.execute(delete(Device).where(Device.user_id == user_id))
-    session.execute(delete(Invite).where(Invite.created_by == user_id))
-    session.execute(delete(User).where(User.id == user_id))
+def _delete_principal_rows(session: Session, principal_id: str) -> None:
+    principal = session.get(Principal, principal_id)
+    session.execute(delete(Token).where(Token.user_id == principal_id))
+    session.execute(delete(Device).where(Device.user_id == principal_id))
+    session.execute(delete(Invite).where(Invite.created_by == principal_id))
+    if principal is not None:
+        session.execute(
+            delete(AuthChallenge).where(AuthChallenge.public_key == principal.public_key)
+        )
+    session.execute(delete(Principal).where(Principal.id == principal_id))
 
 
 def _delete_workspace_rows(session: Session, ws: Workspace) -> None:
-    """FK-safe erase of everything the workspace owns. Users whose only
-    membership was this workspace are deleted too; users who also belong to
-    another workspace survive (only their membership here goes)."""
-    user_ids = set(
+    """FK-safe erase of everything the workspace owns. Principals whose only
+    membership was this workspace are deleted too; principals who also belong
+    to another workspace survive (only their membership here goes)."""
+    principal_ids = set(
         session.scalars(
             select(Membership.user_id).where(Membership.workspace_id == ws.id)
         )
@@ -63,41 +72,45 @@ def _delete_workspace_rows(session: Session, ws: Workspace) -> None:
     session.execute(delete(Invite).where(Invite.workspace_id == ws.id))
     session.execute(delete(Membership).where(Membership.workspace_id == ws.id))
     session.flush()
-    for uid in user_ids:
+    for pid in principal_ids:
         remaining = session.scalar(
-            select(Membership.id).where(Membership.user_id == uid).limit(1)
+            select(Membership.id).where(Membership.user_id == pid).limit(1)
         )
-        if remaining is None:
-            _delete_user_rows(session, uid)
+        principal = session.get(Principal, pid)
+        # The server owner's identity outlives any one workspace — it's the
+        # bootstrap credential for creating the next one.
+        if remaining is None and principal is not None and not principal.is_owner:
+            _delete_principal_rows(session, pid)
     session.delete(ws)
 
 
 @router.delete("/v1/workspaces")
 def delete_workspace(
-    body: ConfirmPassword,
-    auth: AuthContext = Depends(require_admin),
+    body: SignedProof,
+    auth: AuthContext = Depends(require_host),
     session: Session = Depends(get_session),
 ) -> dict:
-    _check_password(auth, body.password)
+    _check_proof(session, auth.principal, body)
     ws = auth.workspace
     ws_name, ws_id = ws.name, ws.id
     _delete_workspace_rows(session, ws)
-    logger.info("workspace %s (%s) deleted by %s", ws_id, ws_name, auth.user.email)
+    logger.info(
+        "workspace %s (%s) deleted by host @%s", ws_id, ws_name, auth.membership.handle
+    )
     return {"deleted": True}
 
 
 @router.delete("/v1/me")
-def delete_account(
-    body: ConfirmPassword,
-    auth: AuthContext = Depends(current_auth),
+def delete_identity(
+    body: SignedProof,
+    principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
-    _check_password(auth, body.password)
-    uid = auth.user.id
-    email = auth.user.email
+    _check_proof(session, principal, body)
+    pid = principal.id
     memberships = session.scalars(
         select(Membership).where(
-            Membership.user_id == uid, Membership.is_active.is_(True)
+            Membership.user_id == pid, Membership.is_active.is_(True)
         )
     ).all()
 
@@ -107,22 +120,28 @@ def delete_account(
             select(Membership.id)
             .where(
                 Membership.workspace_id == m.workspace_id,
-                Membership.user_id != uid,
+                Membership.user_id != pid,
                 Membership.is_active.is_(True),
             )
             .limit(1)
         )
         if other_member is None:
-            # A workspace of one: deleting the account deletes it outright.
+            # A graph of one: deleting the identity deletes it outright.
             solo_workspace_ids.append(m.workspace_id)
             continue
+        if m.role == "host":
+            raise HTTPException(
+                400,
+                "you host a graph that still has members — delete the graph "
+                "first, or wait for the members to leave",
+            )
         if m.role == "admin":
             other_admin = session.scalar(
                 select(Membership.id)
                 .where(
                     Membership.workspace_id == m.workspace_id,
-                    Membership.user_id != uid,
-                    Membership.role == "admin",
+                    Membership.user_id != pid,
+                    Membership.role.in_(("host", "admin")),
                     Membership.is_active.is_(True),
                 )
                 .limit(1)
@@ -130,17 +149,17 @@ def delete_account(
             if other_admin is None:
                 raise HTTPException(
                     400,
-                    "you are the only admin of a workspace with other members — "
-                    "promote another admin first, or delete the workspace",
+                    "you are the only admin of a graph with other members — "
+                    "ask the host to promote someone first",
                 )
 
     for ws_id in solo_workspace_ids:
         _delete_workspace_rows(session, session.get(Workspace, ws_id))
 
-    # Leave every surviving workspace, then erase the user.
-    session.execute(delete(Membership).where(Membership.user_id == uid))
+    # Leave every surviving workspace, then erase the identity.
+    session.execute(delete(Membership).where(Membership.user_id == pid))
     session.flush()
-    if session.get(User, uid) is not None:
-        _delete_user_rows(session, uid)
-    logger.info("account %s deleted (solo workspaces: %d)", email, len(solo_workspace_ids))
+    if session.get(Principal, pid) is not None:
+        _delete_principal_rows(session, pid)
+    logger.info("identity %s deleted (solo graphs: %d)", pid, len(solo_workspace_ids))
     return {"deleted": True}

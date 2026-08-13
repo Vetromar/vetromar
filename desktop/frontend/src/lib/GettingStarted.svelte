@@ -3,24 +3,7 @@
   // Completion is re-derived from actual state every launch (via GET
   // /api/onboarding), so returning users never see stale unchecked items.
   // Self-hides when everything applicable is done; the × dismiss persists.
-  import { onMount } from "svelte";
-  import { api } from "../api.js";
-
-  let { status, isAdmin, onNavigate, onReplayTour, onDismiss } = $props();
-
-  // Admin-only, cloud-backed check — fetched lazily here (not in the local
-  // /api/onboarding route) and fail-soft: offline just leaves it unchecked.
-  let teamInvited = $state(false);
-
-  onMount(async () => {
-    if (!isAdmin) return;
-    try {
-      const { members } = await api.workspaceMembers();
-      teamInvited = (members?.length ?? 0) > 1;
-    } catch {
-      // unreachable cloud — leave unchecked
-    }
-  });
+  let { status, onNavigate, onReplayTour, onDismiss } = $props();
 
   const items = $derived([
     { label: "Take the tour", done: status.tour_done, go: () => onReplayTour?.() },
@@ -34,9 +17,6 @@
       done: status.meeting_captured,
       go: () => onNavigate?.("capture"),
     },
-    ...(isAdmin
-      ? [{ label: "Invite a teammate", done: teamInvited, go: () => onNavigate?.("workspace") }]
-      : []),
   ]);
   const doneCount = $derived(items.filter((i) => i.done).length);
   const allDone = $derived(doneCount === items.length);

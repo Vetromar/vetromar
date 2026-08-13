@@ -53,19 +53,11 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     def health():
         return {"ok": True}
 
-    # Account pages, served by the server itself: N self-hosted instances
-    # can't share a static site with a baked-in API URL, so signup/invite/
-    # reset live same-origin with the API they call.
-    @app.get("/signup", include_in_schema=False)
-    def signup_page():
-        return FileResponse(_STATIC / "signup.html")
-
+    # The one page the server serves itself: an invite link opened in a
+    # browser explains that joining happens in the app (enrollment needs the
+    # local keypair, so there is nothing a web form could do).
     @app.get("/invite-accept", include_in_schema=False)
     def invite_accept_page():
         return FileResponse(_STATIC / "invite-accept.html")
-
-    @app.get("/reset-password", include_in_schema=False)
-    def reset_password_page():
-        return FileResponse(_STATIC / "reset-password.html")
 
     return app
