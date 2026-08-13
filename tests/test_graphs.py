@@ -119,6 +119,30 @@ def test_note_title_derivation(store):
     assert episode2.title == "Custom"
 
 
+def test_share_route_private_to_shared(client):
+    g = client.post("/api/graphs", json={"name": "Crew"}).json()
+    # A note in the PRIVATE graph...
+    note = client.post("/api/graphs/private/note", json={"text": "brass hinge"}).json()
+    # ...pushed through the membrane.
+    report = client.post(
+        "/api/store/share",
+        json={"graph": g["id"], "episode_ids": [note["episode"]["id"]]},
+    ).json()
+    assert report["episodes_copied"] == 1 and report["units_copied"] == 1
+    shared = client.get("/api/store/search", params={"graph": g["id"]}).json()
+    assert len(shared) == 1
+    # Private original is untouched and unstamped; no contributor on a
+    # local-only destination either (no membership handle to claim yet).
+    assert client.get("/api/store/search").json()[0]["unit"]["provenance"]["contributor"] is None
+
+    # Guards: sharing to yourself / empty selection.
+    assert (
+        client.post("/api/store/share", json={"graph": "private", "unit_ids": ["x"]}).status_code
+        == 400
+    )
+    assert client.post("/api/store/share", json={"graph": g["id"]}).status_code == 400
+
+
 # -- MCP surface ----------------------------------------------------------------
 
 

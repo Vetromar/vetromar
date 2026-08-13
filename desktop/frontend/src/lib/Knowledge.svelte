@@ -5,6 +5,7 @@
   // mutation is renaming an episode's title — units stay read-only.
   import { api } from "../api.js";
   import { captureJob, documentJob, sourcesJob, workspaceJob } from "./jobs.svelte.js";
+  import { graphsStore } from "./graphs.svelte.js";
   import Graph from "./Graph.svelte";
   import UnitDetail from "./UnitDetail.svelte";
 
@@ -32,6 +33,37 @@
 
   // graph
   let graphData = $state(null);
+
+  // the membrane: share the open episode into another graph
+  let shareTarget = $state("");
+  let shareBusy = $state(false);
+  let shareMsg = $state(null);
+  const shareTargets = $derived(
+    graphsStore.list.filter((g) => g.id !== graphsStore.activeId)
+  );
+
+  async function shareEpisode() {
+    if (!shareTarget || shareBusy || !episodeDetail) return;
+    shareBusy = true;
+    shareMsg = null;
+    try {
+      const report = await api.storeShare(shareTarget, {
+        episodeIds: [episodeDetail.episode.id],
+      });
+      const target = graphsStore.list.find((g) => g.id === shareTarget);
+      shareMsg = `Shared ${report.units_copied} unit${report.units_copied === 1 ? "" : "s"} to ${target?.name ?? "graph"}` +
+        (report.units_skipped ? ` (${report.units_skipped} already there)` : "");
+      // Connected destination: push it to the host right away, best-effort.
+      if (target?.host_url && target?.workspace_id) {
+        api.graphSync(shareTarget).catch(() => {});
+      }
+    } catch (e) {
+      shareMsg = null;
+      error = e.message;
+    } finally {
+      shareBusy = false;
+    }
+  }
 
   // drill-in
   let selected = $state(null); // full unit payload
@@ -378,6 +410,9 @@
           <div class="meta">
             <span class="pill {hit.unit.payload?.status ?? ''}">{pillLabel(hit.unit)}</span>
             {#if hit.unit.valid_to}<span class="pill superseded">superseded</span>{/if}
+            {#if hit.unit.provenance?.contributor?.handle}
+              <span class="badge">@{hit.unit.provenance.contributor.handle}</span>
+            {/if}
             <span class="muted" style="font-size:12.5px">
               {hit.unit.provenance?.method} · {hit.episode?.source_kind} · {hit.episode?.title}
             </span>
@@ -452,6 +487,9 @@
         </div>
         <div class="row" style="flex-wrap:wrap">
           <span class="badge">{episodeDetail.episode.source_kind}</span>
+          {#if episodeDetail.episode.contributor?.handle}
+            <span class="badge">@{episodeDetail.episode.contributor.handle}</span>
+          {/if}
           <span class="muted" style="font-size:13px">{fmt(episodeDetail.episode.occurred_at)}</span>
           <label class="check muted">
             <input
@@ -462,6 +500,20 @@
             show raw
           </label>
         </div>
+        {#if shareTargets.length}
+          <div class="row" style="gap:8px; flex-wrap:wrap">
+            <select bind:value={shareTarget}>
+              <option value="" disabled>Share this episode to…</option>
+              {#each shareTargets as g (g.id)}
+                <option value={g.id}>{g.name}</option>
+              {/each}
+            </select>
+            <button disabled={!shareTarget || shareBusy} onclick={shareEpisode}>
+              {shareBusy ? "Sharing…" : "Share"}
+            </button>
+            {#if shareMsg}<span class="muted" style="font-size:13px">{shareMsg}</span>{/if}
+          </div>
+        {/if}
         {#if showRaw && episodeDetail.episode.raw}
           <pre class="raw">{episodeDetail.episode.raw}</pre>
         {/if}
@@ -485,6 +537,9 @@
           <button class="unit clickable" onclick={() => openEpisode(ep.id)}>
             <div class="meta">
               <span class="badge">{ep.source_kind}</span>
+              {#if ep.contributor?.handle}
+                <span class="badge">@{ep.contributor.handle}</span>
+              {/if}
               <span class="muted" style="font-size:12.5px">{fmt(ep.occurred_at)}</span>
             </div>
             <h3>{ep.title}</h3>

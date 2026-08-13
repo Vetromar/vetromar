@@ -238,6 +238,16 @@ Evidence = Annotated[
 # ---------------------------------------------------------------------------
 
 
+class ContributorRef(BaseModel):
+    """Who put this into a shared graph: their identity's public key plus the
+    name they go by in that graph. None on private-graph content — the
+    private graph has no audience to attribute to."""
+
+    public_key: str = Field(description="The contributor's Ed25519 public key (urlsafe b64)")
+    handle: Optional[str] = Field(default=None, description="Their handle in this graph")
+    display_name: Optional[str] = Field(default=None, description="Their display name there")
+
+
 class Provenance(BaseModel):
     """How a unit entered the store. `method` values:
     'captured' (our pipeline), 'concierge' (hand-entered), 'pushed' (an agent
@@ -249,6 +259,10 @@ class Provenance(BaseModel):
     captured_at: datetime = Field(default_factory=_now)
     agent: Optional[str] = Field(
         default=None, description="Client/agent name for pushed units, if identified"
+    )
+    contributor: Optional[ContributorRef] = Field(
+        default=None,
+        description="Who contributed this to a shared graph; None on private content",
     )
 
 
@@ -275,6 +289,10 @@ class Episode(BaseModel):
         default=None,
         description="Stable id at the source ('slack:C123:1721...') for sync"
         " idempotency; None for captured/hand-entered episodes",
+    )
+    contributor: Optional[ContributorRef] = Field(
+        default=None,
+        description="Who contributed this to a shared graph; None on private content",
     )
 
 

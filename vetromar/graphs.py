@@ -159,6 +159,35 @@ def update_graph(graph_id: str, **fields) -> GraphInfo:
     raise GraphError(f"unknown graph: {graph_id}")
 
 
+def contributor_for(graph_id: Optional[str]):
+    """The ContributorRef to stamp on writes into this graph — None for the
+    private graph (no audience to attribute to). Generates the identity on
+    first use, same as every other identity touchpoint."""
+    if graph_id is None or graph_id == PRIVATE_GRAPH_ID:
+        return None
+    from vetromar.identity import ensure_identity
+    from vetromar.schema import ContributorRef
+
+    info = get_graph(graph_id)
+    return ContributorRef(
+        public_key=ensure_identity().public_key,
+        handle=info.handle,
+        display_name=info.display_name,
+    )
+
+
+def open_store(graph_id: Optional[str], config: Config | None = None):
+    """Open the graph's Store with its contributor attached — THE way any
+    write path should open a graph-selected store."""
+    from vetromar.store import Store
+
+    db_path = resolve_db_path(graph_id, config)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    store = Store(db_path)
+    store.contributor = contributor_for(graph_id)
+    return store
+
+
 def remove_graph(graph_id: str, *, delete_files: bool = False) -> None:
     """Drop a graph from the registry; optionally delete its store dir.
     The private graph can never be removed."""

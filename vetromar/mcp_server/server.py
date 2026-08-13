@@ -40,9 +40,9 @@ def _get_store(graph: str | None = None) -> Store:
     graph_id = graph or graph_registry.PRIVATE_GRAPH_ID
     store = _stores.get(graph_id)
     if store is None:
-        db_path = graph_registry.resolve_db_path(graph_id)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        store = Store(db_path)
+        # open_store attaches the contributor stamp — agent pushes into a
+        # shared graph are attributed like any other write.
+        store = graph_registry.open_store(graph_id)
         _stores[graph_id] = store
     return store
 

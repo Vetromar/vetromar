@@ -77,6 +77,102 @@ def ingest_document(
     return episode, units
 
 
+def share_to_graph(
+    src,
+    dst,
+    *,
+    unit_ids: list[str] | None = None,
+    episode_ids: list[str] | None = None,
+) -> dict:
+    """The membrane: copy selected knowledge from one graph's store into
+    another's — the deliberate act of sharing.
+
+    Semantics (see CONTRIBUTING.md invariants):
+    - IDs are preserved: graphs are separate SQLite files (no collision
+      domain), and preserved ids make re-sharing idempotent for free.
+    - Episodes travel WITH their raw content — the evidence gate re-validates
+      at the destination door and again on every member's replica.
+    - Entities are never copied: the destination graph builds its own entity
+      layer via auto-linking, instead of force-merging two namespaces.
+    - Edges copy only when both endpoints are units present in the
+      destination; entity edges and out-of-selection edges are dropped
+      (reported). Invalidated edges stay home — history is per-graph.
+    - The destination store's contributor stamp applies to anything that
+      doesn't already carry one (re-shares keep the original contributor).
+    """
+    from vetromar.linking import auto_link
+    from vetromar.store import StoreError
+
+    unit_ids = list(unit_ids or [])
+    for episode_id in episode_ids or []:
+        unit_ids.extend(u.id for u in src.list_units(episode_id=episode_id))
+    # De-dup, keep order.
+    unit_ids = list(dict.fromkeys(unit_ids))
+
+    units = [src.get_unit(uid) for uid in unit_ids]
+    report = {
+        "episodes_copied": 0,
+        "units_copied": 0,
+        "units_skipped": 0,
+        "edges_copied": 0,
+        "edges_dropped": 0,
+    }
+
+    def _exists(getter, row_id: str) -> bool:
+        try:
+            getter(row_id)
+            return True
+        except StoreError:
+            return False
+
+    # Episodes first (units FK them), raw included.
+    for episode_id in dict.fromkeys(u.provenance.episode_id for u in units):
+        if _exists(dst.get_episode, episode_id):
+            continue
+        dst.add_episode(src.get_episode(episode_id))
+        report["episodes_copied"] += 1
+
+    to_copy = []
+    for unit in units:
+        if _exists(dst.get_unit, unit.id):
+            report["units_skipped"] += 1
+        else:
+            to_copy.append(unit)
+    if to_copy:
+        dst.add_units(to_copy)  # gate re-validates against the copied raw
+        report["units_copied"] += len(to_copy)
+
+    # Edges among units now present in the destination.
+    shared_ids = set(unit_ids)
+    seen_edges: set[str] = set()
+    for unit in units:
+        for edge in src.edges_for(unit.id, current_only=True):
+            if edge.id in seen_edges:
+                continue
+            seen_edges.add(edge.id)
+            other = edge.to_id if edge.from_id == unit.id else edge.from_id
+            if other in shared_ids or _exists(dst.get_unit, other):
+                before = len(dst.edges_for(edge.from_id, kind=edge.kind))
+                dst.add_edge(
+                    edge.from_id,
+                    edge.to_id,
+                    edge.kind,
+                    method=edge.method,
+                    confidence=edge.confidence,
+                    rationale=edge.rationale,
+                    ref=edge.ref,
+                )
+                if len(dst.edges_for(edge.from_id, kind=edge.kind)) > before:
+                    report["edges_copied"] += 1
+            else:
+                report["edges_dropped"] += 1
+
+    if to_copy:
+        # Best-effort: the destination graph links its own entity layer.
+        auto_link(dst, to_copy, None)
+    return report
+
+
 def default_meeting_title(when: datetime) -> str:
     """The auto-generated title when a capture/record starts without one.
     Rendered in the user's local wall-clock time — the sidecar and CLI run on

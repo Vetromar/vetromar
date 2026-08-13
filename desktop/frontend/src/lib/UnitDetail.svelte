@@ -43,6 +43,11 @@
     <span class="pill {unit.payload?.status ?? ''}">{pillLabel(unit)}</span>
     <span class="badge">{unit.provenance?.method}</span>
     <span class="badge">{episode?.source_kind}</span>
+    {#if unit.provenance?.contributor?.handle}
+      <span class="badge" title={unit.provenance.contributor.display_name || ""}>
+        @{unit.provenance.contributor.handle}
+      </span>
+    {/if}
     {#if unit.valid_to}
       <span class="pill superseded">superseded</span>
     {/if}

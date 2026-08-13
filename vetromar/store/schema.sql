@@ -1,4 +1,4 @@
--- Vetromar store v6: graph-shaped, bi-temporal, provenance-carrying knowledge
+-- Vetromar store v7: graph-shaped, bi-temporal, provenance-carrying knowledge
 -- store over SQLite. Typed nodes (units, entities) + episodes (raw layer) +
 -- typed edges. `payload` columns hold the full model JSON (source of truth);
 -- the other columns are denormalized copies for filtering/indexing.
@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     ingested_at TEXT NOT NULL,
     raw         TEXT,             -- canonical raw content (evidence is validated against this)
     raw_ref     TEXT,             -- pointer to big binaries / the external source
-    external_id TEXT              -- stable id at the source ('slack:C123:1721...'); NULL for capture/manual
+    external_id TEXT,             -- stable id at the source ('slack:C123:1721...'); NULL for capture/manual
+    contributor TEXT              -- ContributorRef JSON (shared graphs); NULL for private content
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_external
@@ -154,4 +155,4 @@ CREATE TABLE IF NOT EXISTS replication_quarantine (
     received_at TEXT NOT NULL
 );
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;

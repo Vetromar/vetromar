@@ -39,7 +39,7 @@ logger = logging.getLogger("vetromar.store.replication")
 
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text()
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # BGE-small embeddings: 384 float32 little-endian = 1536 bytes. The vec0 KNN
 # index is declared at this dimension; blobs of any other size stay usable
@@ -99,6 +99,11 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE TABLE IF NOT EXISTS entity_vectors ("
         " entity_id TEXT PRIMARY KEY, embedding BLOB NOT NULL)",
     ),
+    # v6 -> v7 (shared graphs): contributor attribution on episodes. Units
+    # carry theirs inside the payload JSON; episodes are column-stored, so
+    # attribution needs a column. The guarded ALTER lives in
+    # _MIGRATION_HOOKS[6] (ALTER has no IF NOT EXISTS).
+    6: (),
 }
 
 
@@ -175,9 +180,17 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE edges ADD COLUMN valid_to TEXT")
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """Add episodes.contributor (ALTER has no IF NOT EXISTS; guarded so
+    fixtures built from current schema.sql migrate cleanly)."""
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(episodes)")}
+    if columns and "contributor" not in columns:
+        conn.execute("ALTER TABLE episodes ADD COLUMN contributor TEXT")
+
+
 # Post-SQL migration hooks: version -> callable(conn), run inside
 # _check_schema_version right after that version's SQL statements.
-_MIGRATION_HOOKS: dict[int, object] = {4: _backfill_v5, 5: _migrate_v6}
+_MIGRATION_HOOKS: dict[int, object] = {4: _backfill_v5, 5: _migrate_v6, 6: _migrate_v7}
 
 
 def _iso(dt: datetime) -> str:
@@ -266,6 +279,12 @@ class Store:
         # Workspace replication: every knowledge write appends to the
         # changelog outbox unless we're applying a remote change.
         self._log_changes = True
+        # Shared graphs: when set (by the graph-aware opener), every LOCAL
+        # write is stamped with this ContributorRef at the door — capture,
+        # notes, uploads, MCP pushes, membrane copies, all of them. Remote
+        # applies flip _log_changes off, which also disables stamping: the
+        # local identity must never claim replicated work.
+        self.contributor = None
 
     def _load_sqlite_vec(self) -> bool:
         # Optional acceleration: cosine top-k in SQL. Any failure (extension
@@ -368,10 +387,12 @@ class Store:
     # -- episodes (the raw layer) --------------------------------------------
 
     def add_episode(self, episode: Episode) -> Episode:
+        if self._log_changes and self.contributor is not None and episode.contributor is None:
+            episode.contributor = self.contributor
         try:
             self._conn.execute(
-                "INSERT INTO episodes (id, source_kind, title, occurred_at, ingested_at, raw, raw_ref, external_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO episodes (id, source_kind, title, occurred_at, ingested_at, raw, raw_ref, external_id, contributor)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     episode.id,
                     episode.source_kind,
@@ -381,6 +402,7 @@ class Store:
                     episode.raw,
                     episode.raw_ref,
                     episode.external_id,
+                    episode.contributor.model_dump_json() if episode.contributor else None,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -405,6 +427,7 @@ class Store:
 
     @staticmethod
     def _episode_from_row(row: sqlite3.Row) -> Episode:
+        contributor = row["contributor"] if "contributor" in row.keys() else None
         return Episode(
             id=row["id"],
             source_kind=row["source_kind"],
@@ -414,6 +437,7 @@ class Store:
             raw=row["raw"],
             raw_ref=row["raw_ref"],
             external_id=row["external_id"],
+            contributor=json.loads(contributor) if contributor else None,
         )
 
     def get_episode(self, episode_id: str) -> Episode:
@@ -480,6 +504,12 @@ class Store:
         return units
 
     def _insert_unit(self, unit: Unit) -> None:
+        if (
+            self._log_changes
+            and self.contributor is not None
+            and unit.provenance.contributor is None
+        ):
+            unit.provenance.contributor = self.contributor
         status = getattr(unit.payload, "status", None)
         self._conn.execute(
             "INSERT INTO units (id, type, status, episode_id, method,"

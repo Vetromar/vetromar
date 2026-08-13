@@ -122,6 +122,14 @@ export const api = {
   hostStatus: () => request("/api/host"),
   hostConfigure: (body) => jsonPost("/api/host", body),
   hostCreateGraph: (body) => jsonPost("/api/host/graphs", body),
+  // The membrane: push selected knowledge from the ACTIVE graph into another
+  storeShare: (destGraph, { unitIds = [], episodeIds = [] } = {}) =>
+    jsonPost("/api/store/share", {
+      graph: destGraph,
+      from_graph: activeGraph,
+      unit_ids: unitIds,
+      episode_ids: episodeIds,
+    }),
   // Store browsing (read-only; scoped to the active graph)
   storeSearch: (params) => request("/api/store/search" + qs(withGraph(params))),
   storeUnit: (id) => request("/api/store/units/" + id + qs(withGraph())),

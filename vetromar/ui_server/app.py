@@ -133,6 +133,13 @@ class GraphRole(BaseModel):
     role: str
 
 
+class ShareRequest(BaseModel):
+    graph: str  # destination graph id
+    from_graph: Optional[str] = None  # None → the private graph
+    unit_ids: list[str] = []
+    episode_ids: list[str] = []
+
+
 def _config_http(exc: ConfigError, status: int = 400) -> HTTPException:
     detail = exc.message if exc.hint is None else f"{exc.message} {exc.hint}"
     return HTTPException(status_code=status, detail=detail)
@@ -162,6 +169,15 @@ def _graph_db_path(graph: Optional[str]) -> Path:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+def _graph_contributor(graph: Optional[str]):
+    """Route-time contributor resolution for job workers (the same rule as
+    db paths: resolve now, close over the value)."""
+    try:
+        return graphs.contributor_for(graph)
+    except GraphError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 def _graph_meta(graph: Optional[str]) -> dict:
     """Job meta labeling: which graph a job writes into, for UI badges."""
     graph_id = graph or graphs.PRIVATE_GRAPH_ID
@@ -173,13 +189,15 @@ def _graph_meta(graph: Optional[str]) -> dict:
 
 
 def _with_store(fn, graph: Optional[str] = None):
-    """Run a read against a fresh Store (FastAPI sync routes run in a thread
+    """Run a call against a fresh Store (FastAPI sync routes run in a thread
     pool and SQLite is thread-bound — same reasoning as jobs.py). `graph`
-    selects which graph's store; default private. Unknown ids (StoreError)
+    selects which graph's store — opened via graphs.open_store so writes
+    into shared graphs carry the contributor stamp. Unknown ids (StoreError)
     become 404s."""
-    db_path = _graph_db_path(graph)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    store = Store(db_path)
+    try:
+        store = graphs.open_store(graph)
+    except GraphError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     try:
         return fn(store)
     except StoreError as exc:
@@ -200,17 +218,25 @@ def _graph_config(db_path: Optional[Path]):
 
 
 def _run_pipeline_on(
-    job: Job, audio_path: Path, title: str, when: datetime, db_path: Optional[Path] = None
+    job: Job,
+    audio_path: Path,
+    title: str,
+    when: datetime,
+    db_path: Optional[Path] = None,
+    contributor=None,
 ) -> dict:
     """Shared tail of capture + record: prep backend, run the pipeline, package.
 
-    Opens the Store inside the worker thread (SQLite is thread-bound)."""
+    Opens the Store inside the worker thread (SQLite is thread-bound).
+    `db_path`/`contributor` are resolved at ROUTE time — a worker never
+    re-derives the graph."""
     from vetromar.capture.pipeline import run_pipeline
 
     config = _graph_config(db_path)
     operations.ensure_backend_ready(config)
     job.set_stage("Preparing", None)
     store = Store(config.db_path)
+    store.contributor = contributor
     try:
         episode, units, markdown = run_pipeline(
             audio_path,
@@ -426,8 +452,12 @@ def create_app() -> FastAPI:
         dest = uploads / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}{suffix}"
         dest.write_bytes(await file.read())
 
+        contributor = _graph_contributor(graph)
         job = _JOBS.create("capture", meta=_graph_meta(graph))
-        _JOBS.start(job, lambda j: _run_pipeline_on(j, dest, title, occurred_at, db_path))
+        _JOBS.start(
+            job,
+            lambda j: _run_pipeline_on(j, dest, title, occurred_at, db_path, contributor),
+        )
         return {"job_id": job.id}
 
     @app.post("/api/documents")
@@ -455,9 +485,12 @@ def create_app() -> FastAPI:
         dest.write_bytes(await file.read())
         doc_title = title.strip() or Path(file.filename or dest.name).stem
 
+        contributor = _graph_contributor(graph)
+
         def target(job: Job) -> dict:
             config = _graph_config(db_path)
             store = Store(config.db_path)  # jobs open their own Store
+            store.contributor = contributor
             try:
                 job.log(f"parsing {dest.name}")
 
@@ -486,6 +519,7 @@ def create_app() -> FastAPI:
         occurred_at = _parse_when(body.when)
         title = body.title.strip() or operations.default_meeting_title(occurred_at)
         db_path = _graph_db_path(body.graph)
+        contributor = _graph_contributor(body.graph)
         out_path = (
             db_path.parent
             / "recordings"
@@ -500,7 +534,7 @@ def create_app() -> FastAPI:
             job.log("recording — press Stop when done")
             audio = record_mic(out_path, stop_event=job.stop_event)
             job.status = "running"
-            return _run_pipeline_on(job, audio, title, occurred_at, db_path)
+            return _run_pipeline_on(job, audio, title, occurred_at, db_path, contributor)
 
         job = _JOBS.create("record", meta=_graph_meta(body.graph))
         _JOBS.start(job, target)
@@ -1092,6 +1126,35 @@ def create_app() -> FastAPI:
             }
 
         return _with_store(write, graph=graph_id)
+
+    @app.post("/api/store/share")
+    def store_share(body: ShareRequest) -> dict:
+        """The membrane: push selected episodes/units from one graph into
+        another (default source: the private graph). Synchronous — a local
+        copy is fast; the UI kicks a sync afterwards."""
+        if not body.unit_ids and not body.episode_ids:
+            raise HTTPException(status_code=400, detail="Select something to share.")
+        if (body.from_graph or graphs.PRIVATE_GRAPH_ID) == body.graph:
+            raise HTTPException(status_code=400, detail="Source and destination match.")
+        try:
+            src = graphs.open_store(body.from_graph)
+        except GraphError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        try:
+            dst = graphs.open_store(body.graph)
+        except GraphError as exc:
+            src.close()
+            raise HTTPException(status_code=404, detail=str(exc))
+        try:
+            report = operations.share_to_graph(
+                src, dst, unit_ids=body.unit_ids, episode_ids=body.episode_ids
+            )
+        except StoreError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        finally:
+            src.close()
+            dst.close()
+        return report
 
     # -- store browsing (same payloads as the MCP read tools; the lone
     # mutation is the episode-title rename — units stay read-only) ------------
