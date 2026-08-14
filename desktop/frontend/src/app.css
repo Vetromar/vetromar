@@ -55,6 +55,11 @@
   --g-axis-x: #ff3d00;
   --g-axis-y: #00a85b;
   --g-axis-z: #1430ff;
+  /* spatial machine palette (read by lib/spatial/theme.js; --machine is
+     HomeCity's prism grey promoted to a token) */
+  --machine: #b0aca3;
+  --machine-raised: #c4c0b6;
+  --machine-control: #a09c92;
   color-scheme: light;
 }
 
@@ -79,6 +84,9 @@
     --g-axis-x: #ff6b4a;
     --g-axis-y: #00c46a;
     --g-axis-z: #7b8cff;
+    --machine: #4a463d;
+    --machine-raised: #59503f;
+    --machine-control: #6b6252;
     color-scheme: dark;
   }
 }
@@ -235,6 +243,146 @@ textarea:focus {
   width: 11px;
   height: 11px;
   border-width: 2px;
+}
+/* ---- spatial machines (lib/spatial) ------------------------------------ */
+/* Global on purpose: CSS3D adopts elements out of their component subtree,
+   and desk cards are created imperatively — scoped styles can't reach them. */
+.spatial-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+.spatial-caption {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.spatial-hint {
+  position: absolute;
+  left: 50%;
+  top: 9%;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+.spatial-chip {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 6px 12px;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+.css3d-pool {
+  display: none; /* children get adopted into the CSS3D layer on first frame */
+}
+/* Labels lying on 3D push buttons — real buttons for a11y + headless drives */
+.btn-label {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  white-space: pre;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.btn-label.pressed {
+  color: var(--bg);
+}
+/* Flat progress card next to a desk item */
+.desk-card {
+  width: 170px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: none;
+  transition: opacity 0.8s;
+}
+.desk-card .dc-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.desk-card .dc-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-card .dc-kind {
+  color: var(--muted);
+}
+.desk-card .dc-bar {
+  margin-top: 3px;
+  height: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--muted);
+}
+.desk-card .dc-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+}
+.desk-card .dc-status {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.desk-card.failed .dc-status {
+  color: var(--bad);
+}
+/* Flat name tag next to a source cable's jack hole */
+.wire-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: pre;
+  text-align: center;
+  pointer-events: none;
+}
+.wire-label.sel {
+  color: var(--text);
+}
+
+/* Spatial/classic switch — badge-shaped, lowercase on purpose (it names the
+   spatial world's own register). */
+.mode-toggle {
+  padding: 3px 10px;
+  border: 2px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  cursor: pointer;
 }
 
 main {

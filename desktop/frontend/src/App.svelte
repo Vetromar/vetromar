@@ -12,6 +12,12 @@
   import Graphs from "./lib/Graphs.svelte";
   import Logo from "./lib/Logo.svelte";
   import HomeCity from "./lib/HomeCity.svelte";
+  import { uiMode } from "./lib/spatial/mode.svelte.js";
+  import StatusLine from "./lib/spatial/StatusLine.svelte";
+  import CaptureScene from "./lib/spatial/CaptureScene.svelte";
+  import KnowledgeScene from "./lib/spatial/KnowledgeScene.svelte";
+  import SourcesScene from "./lib/spatial/SourcesScene.svelte";
+  import GraphsScene from "./lib/spatial/GraphsScene.svelte";
   import Onboarding from "./lib/Onboarding.svelte";
   import GettingStarted from "./lib/GettingStarted.svelte";
 
@@ -200,6 +206,15 @@
     {#if updater.status === "ready" && updater.dismissed}
       <button class="activity-badge" onclick={() => updater.reopen()}>update ready</button>
     {/if}
+    {#if inApp}
+      <button
+        class="mode-toggle"
+        title="Switch between the 3D machines and the classic tabs"
+        onclick={() => uiMode.toggle()}
+      >
+        {uiMode.spatial ? "spatial" : "classic"}
+      </button>
+    {/if}
     {#if health && inApp}
       <span
         class="badge"
@@ -233,25 +248,49 @@
           }
         : null}
     />
-  {:else if view === "capture"}
+  {:else if view === "capture" && !uiMode.spatial}
     <!-- Keyed on the active graph: switching remounts the tab so every list,
          search and graph view re-fetches against the new store. -->
     {#key graphsStore.activeId}
       <Capture backend={health?.backend} />
     {/key}
-  {:else if view === "knowledge"}
+  {:else if view === "knowledge" && !uiMode.spatial}
     {#key graphsStore.activeId}
       <Knowledge />
     {/key}
-  {:else if view === "sources"}
+  {:else if view === "sources" && !uiMode.spatial}
     <Sources {health} />
-  {:else if view === "graphs"}
+  {:else if view === "graphs" && !uiMode.spatial}
     <Graphs />
   {/if}
 </main>
 
 {#if view === "home"}
   <HomeCity onNavigate={goFromHome} />
+{/if}
+
+<!-- The spatial machines render full-bleed outside <main>, like HomeCity.
+     Capture/Knowledge are keyed on the active graph (scene rebuilds on switch,
+     mirroring the classic remount); Sources/Graphs are not — clicking a
+     cartridge to switch graphs must not tear the scene down mid-interaction. -->
+{#if uiMode.spatial && view === "capture"}
+  {#key graphsStore.activeId}
+    <CaptureScene backend={health?.backend} />
+  {/key}
+{/if}
+{#if uiMode.spatial && view === "knowledge"}
+  {#key graphsStore.activeId}
+    <KnowledgeScene />
+  {/key}
+{/if}
+{#if uiMode.spatial && view === "sources"}
+  <SourcesScene {health} />
+{/if}
+{#if uiMode.spatial && view === "graphs"}
+  <GraphsScene />
+{/if}
+{#if uiMode.spatial && inApp}
+  <StatusLine />
 {/if}
 
 {#if tourOpen}
